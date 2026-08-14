@@ -1,0 +1,91 @@
+{
+  "sample_rate": 48000,
+  "global": {
+    "note_ms": 800,
+    "rest_ms": 200
+  },
+  "chips": {
+    "PSG2": {
+      "_comment": "AY-3-8914 3ch. clock=2MHz, f=clk/(16*TP). レジスタ配置は AY-3-8910 と異なる",
+      "init": [
+        { "reg": "0x08", "val": "0x3F" },
+        { "reg": "0x0B", "val": "0x00" },
+        { "reg": "0x0C", "val": "0x00" },
+        { "reg": "0x0D", "val": "0x00" }
+      ],
+      "channels": [
+        {
+          "ch": 0,
+          "_comment": "CH A 261Hz",
+          "init": [
+            { "reg": "0x00", "val": "0xDE" },
+            { "reg": "0x04", "val": "0x01" },
+            { "reg": "0x0B", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x08", "val": "0x3E" } ],
+          "key_off": [ { "reg": "0x0B", "val": "0x00" }, { "reg": "0x08", "val": "0x3F" } ]
+        },
+        {
+          "ch": 1,
+          "_comment": "CH B 329Hz",
+          "init": [
+            { "reg": "0x01", "val": "0x7B" },
+            { "reg": "0x05", "val": "0x01" },
+            { "reg": "0x0C", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x08", "val": "0x3D" } ],
+          "key_off": [ { "reg": "0x0C", "val": "0x00" }, { "reg": "0x08", "val": "0x3F" } ]
+        },
+        {
+          "ch": 2,
+          "_comment": "CH C 392Hz",
+          "init": [
+            { "reg": "0x02", "val": "0x3F" },
+            { "reg": "0x06", "val": "0x01" },
+            { "reg": "0x0D", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x08", "val": "0x3B" } ],
+          "key_off": [ { "reg": "0x0D", "val": "0x00" }, { "reg": "0x08", "val": "0x3F" } ]
+        },
+        {
+          "ch": 3,
+          "_comment": "ノイズ (CH C)",
+          "init": [
+            { "reg": "0x09", "val": "0x0F" },
+            { "reg": "0x0D", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x08", "val": "0x1F" } ],
+          "key_off": [ { "reg": "0x0D", "val": "0x00" }, { "reg": "0x08", "val": "0x3F" } ]
+        },
+        {
+          "ch": 4,
+          "_comment": "ハードウェアエンベロープ CH A (エンベロープ選択=3, シフトなし)",
+          "init": [
+            { "reg": "0x00", "val": "0xDE" },
+            { "reg": "0x04", "val": "0x01" },
+            { "reg": "0x03", "val": "0x00" },
+            { "reg": "0x07", "val": "0x18" },
+            { "reg": "0x0B", "val": "0x30" },
+            { "reg": "0x0A", "val": "0x0A" }
+          ],
+          "key_on":  [ { "reg": "0x08", "val": "0x3E" } ],
+          "key_off": [ { "reg": "0x0B", "val": "0x00" }, { "reg": "0x08", "val": "0x3F" } ]
+        },
+        {
+          "ch": 5,
+          "_comment": "ハードウェアエンベロープ CH A (エンベロープ選択=1, 2bit 右シフト)",
+          "init": [
+            { "reg": "0x00", "val": "0xDE" },
+            { "reg": "0x04", "val": "0x01" },
+            { "reg": "0x03", "val": "0x00" },
+            { "reg": "0x07", "val": "0x18" },
+            { "reg": "0x0B", "val": "0x10" },
+            { "reg": "0x0A", "val": "0x0A" }
+          ],
+          "key_on":  [ { "reg": "0x08", "val": "0x3E" } ],
+          "key_off": [ { "reg": "0x0B", "val": "0x00" }, { "reg": "0x08", "val": "0x3F" } ]
+        }
+      ]
+    }
+  }
+}

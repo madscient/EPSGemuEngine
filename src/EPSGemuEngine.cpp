@@ -1,0 +1,304 @@
+// EPSGemuEngine.cpp
+// FmEngineApi 準拠エミュレーションエンジン
+// 統合コア:
+//   ay8910 (MAME 由来 / furnace fork)
+//     → EPSG (AY8930) / SSG (YM2149) / PSG (AY-3-8910) / PSG2 (AY-3-8914)
+
+#include "FmEngineApi.h"
+#include "../extern/ay8910/ay8910.h"
+
+#include <cstring>
+#include <string>
+#include <vector>
+#include <memory>
+#include <mutex>
+#include <algorithm>
+
+// =========================================================
+//  定数
+// =========================================================
+// 同一チップを扱う他エンジン (DSAemuEngine の SSG) と音量が揃う係数
+static constexpr float kOutputScale = 1.0f / 65536.0f;
+
+// =========================================================
+//  チップ種別列挙
+// =========================================================
+enum class ChipKind {
+    EPSG,  // AY8930    (拡張モード対応)
+    SSG,   // YM2149
+    PSG,   // AY-3-8910
+    PSG2,  // AY-3-8914 (レジスタ配置が異なる)
+};
+
+// =========================================================
+//  チップエントリ
+// =========================================================
+struct ChipEntry {
+    ChipKind    kind;
+    std::string name;
+    uint32_t    sample_rate = 0;  // エンジンのサンプルレート
+    uint32_t    clock       = 0;  // マスタークロック
+    uint32_t    native_rate = 0;  // コアの内部ステップレート
+
+    // コアの基底クラスに仮想デストラクタがないため、
+    // 具象型のデストラクタを保持できる shared_ptr で持つ
+    std::shared_ptr<ay8910_device> dev;
+
+    // native_rate → sample_rate のデシメーション状態
+    double resample_step = 1.0;   // 出力1サンプルあたりの native ステップ数
+    double tick_remain   = 0.0;   // 現在の native サンプルの未消費分
+    float  tick_value    = 0.0f;  // 現在の native サンプル値
+    float  dc_offset     = 0.0f;  // 全チャンネル無音時の出力レベル
+
+    float gain_l = 1.0f;
+    float gain_r = 1.0f;
+};
+
+// =========================================================
+//  エンジン本体
+// =========================================================
+struct FmEngineOpaque {
+    uint32_t sample_rate;
+    std::vector<std::unique_ptr<ChipEntry>> chips;
+    std::mutex write_mutex;
+};
+
+// =========================================================
+//  対応チップテーブル
+// =========================================================
+struct ChipDesc {
+    const char* name;
+    ChipKind    kind;
+    uint32_t    default_clock;
+};
+
+static const ChipDesc kChipTable[] = {
+    { "EPSG", ChipKind::EPSG, 2000000 },  // AY8930
+    { "SSG",  ChipKind::SSG,  2000000 },  // YM2149
+    { "PSG",  ChipKind::PSG,  2000000 },  // AY-3-8910
+    { "PSG2", ChipKind::PSG2, 2000000 },  // AY-3-8914
+};
+static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
+
+static const ChipDesc* findChipDesc(const char* name) {
+    if (!name) return nullptr;
+    for (uint32_t i = 0; i < kChipCount; ++i)
+        if (strcmp(kChipTable[i].name, name) == 0)
+            return &kChipTable[i];
+    return nullptr;
+}
+
+// =========================================================
+//  コアの内部ステップレート
+//  AY8930 はトーンカウンタを AY-3-8910 の 2 倍の速度で回すため
+//  ステップレートも 2 倍になる (拡張モードの分解能に対応する)
+// =========================================================
+static uint32_t nativeRate(ChipKind kind, uint32_t clock) {
+    return (kind == ChipKind::EPSG) ? clock / 4 : clock / 8;
+}
+
+// =========================================================
+//  1 native ステップ生成 (3ch 合成, DC 除去済み)
+// =========================================================
+static float chipStep(ChipEntry& c) {
+    short buf[ay8910_device::NUM_CHANNELS] = { 0, 0, 0 };
+    c.dev->sound_stream_update(buf, 1);
+    return (float)(buf[0] + buf[1] + buf[2]) - c.dc_offset;
+}
+
+// =========================================================
+//  チップ生成
+// =========================================================
+static std::unique_ptr<ChipEntry> createChip(
+    const ChipDesc& desc, uint32_t clock, uint32_t sample_rate)
+{
+    auto e = std::make_unique<ChipEntry>();
+    e->kind        = desc.kind;
+    e->name        = desc.name;
+    e->sample_rate = sample_rate;
+    e->clock       = (clock != 0) ? clock : desc.default_clock;
+    e->native_rate = nativeRate(desc.kind, e->clock);
+    if (e->native_rate == 0) return nullptr;
+
+    switch (desc.kind) {
+    case ChipKind::EPSG: e->dev = std::make_shared<ay8930_device>(e->native_rate); break;
+    case ChipKind::SSG:  e->dev = std::make_shared<ym2149_device>(e->native_rate); break;
+    case ChipKind::PSG:  e->dev = std::make_shared<ay8910_device>(e->native_rate); break;
+    case ChipKind::PSG2: e->dev = std::make_shared<ay8914_device>(e->native_rate); break;
+    }
+    if (!e->dev) return nullptr;
+
+    e->dev->device_start();
+    e->dev->device_reset();
+
+    e->resample_step = (double)e->native_rate / (double)sample_rate;
+
+    // コアの出力は 0V を負値、電源電圧側を正値で表す片極性信号なので、
+    // リセット直後 (全チャンネル無音) のレベルを DC 成分として控えておく
+    e->dc_offset = chipStep(*e);
+
+    return e;
+}
+
+// =========================================================
+//  レジスタ書き込み
+//  アドレスラッチの上位ニブルが 0 以外ならチップが非選択になる
+//  実チップの挙動をそのまま踏襲する
+//  AY-3-8914 はレジスタ配置が異なるため専用ハンドラを通す
+// =========================================================
+static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val) {
+    if (c.kind == ChipKind::PSG2) {
+        static_cast<ay8914_device*>(c.dev.get())->write(reg, val);
+        return;
+    }
+    c.dev->address_w(reg);
+    c.dev->data_w(val);
+}
+
+// =========================================================
+//  1 出力サンプル生成
+//  native_rate から sample_rate への区間平均 (integrate & dump)
+// =========================================================
+static void chipCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
+    double need = c.resample_step;
+    double acc  = 0.0;
+    while (need > 0.0) {
+        if (c.tick_remain <= 0.0) {
+            c.tick_value  = chipStep(c);
+            c.tick_remain = 1.0;
+        }
+        const double take = std::min(need, c.tick_remain);
+        acc          += (double)c.tick_value * take;
+        c.tick_remain -= take;
+        need          -= take;
+    }
+    const float v = (float)(acc / c.resample_step) * kOutputScale;
+    out_l += v * c.gain_l;
+    out_r += v * c.gain_r;
+}
+
+// =========================================================
+//  C API 実装
+// =========================================================
+extern "C" {
+
+FMENGINE_API FmEngineHandle FMENGINE_CALL FmEngine_Create(uint32_t sample_rate) {
+    if (sample_rate == 0) sample_rate = 48000;
+    auto* eng = new(std::nothrow) FmEngineOpaque();
+    if (!eng) return nullptr;
+    eng->sample_rate = sample_rate;
+    return eng;
+}
+
+FMENGINE_API void FMENGINE_CALL FmEngine_Destroy(FmEngineHandle engine) {
+    delete engine;
+}
+
+FMENGINE_API uint32_t FMENGINE_CALL FmEngine_Inquiry(FmEngineHandle /*engine*/) {
+    return kChipCount;
+}
+
+FMENGINE_API const char* FMENGINE_CALL FmEngine_GetSupportedChip(
+    FmEngineHandle /*engine*/, uint32_t index)
+{
+    if (index >= kChipCount) return nullptr;
+    return kChipTable[index].name;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_AddChip(
+    FmEngineHandle engine, const char* name, uint32_t clock, uint32_t* out_id)
+{
+    if (!engine || !name) return FM_ERR_INVALID_ARG;
+    const ChipDesc* desc = findChipDesc(name);
+    if (!desc) return FM_ERR_UNKNOWN_CHIP;
+
+    auto chip = createChip(*desc, clock, engine->sample_rate);
+    if (!chip) return FM_ERR_ALLOC;
+
+    if (out_id) *out_id = (uint32_t)engine->chips.size();
+    engine->chips.push_back(std::move(chip));
+    return FM_OK;
+}
+
+FMENGINE_API const char* FMENGINE_CALL FmEngine_GetChipName(
+    FmEngineHandle engine, uint32_t chip_id)
+{
+    if (!engine || chip_id >= engine->chips.size()) return nullptr;
+    return engine->chips[chip_id]->name.c_str();
+}
+
+FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetNativeRate(
+    FmEngineHandle engine, uint32_t chip_id)
+{
+    if (!engine || chip_id >= engine->chips.size()) return 0;
+    return engine->chips[chip_id]->native_rate;
+}
+
+FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetSampleRate(FmEngineHandle engine) {
+    if (!engine) return 0;
+    return engine->sample_rate;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_Write(
+    FmEngineHandle engine, uint32_t chip_id,
+    uint8_t reg, uint8_t value, uint32_t /*port*/)
+{
+    if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
+    std::lock_guard<std::mutex> lock(engine->write_mutex);
+    chipWrite(*engine->chips[chip_id], reg, value);
+    return FM_OK;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetGain(
+    FmEngineHandle engine, uint32_t chip_id, float gain_l, float gain_r)
+{
+    if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
+    engine->chips[chip_id]->gain_l = gain_l;
+    engine->chips[chip_id]->gain_r = gain_r;
+    return FM_OK;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetGain(
+    FmEngineHandle engine, uint32_t chip_id,
+    float* out_gain_l, float* out_gain_r)
+{
+    if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
+    if (out_gain_l) *out_gain_l = engine->chips[chip_id]->gain_l;
+    if (out_gain_r) *out_gain_r = engine->chips[chip_id]->gain_r;
+    return FM_OK;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
+    FmEngineHandle engine, uint32_t chip_id,
+    FmMemoryType /*mem_type*/, const uint8_t* /*data*/, uint32_t /*size*/)
+{
+    if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
+    return FM_ERR_UNAVAILABLE;  // 外部メモリを持たない
+}
+
+FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetMemorySize(
+    FmEngineHandle engine, uint32_t /*chip_id*/, FmMemoryType /*mem_type*/)
+{
+    (void)engine;
+    return 0;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_Generate(
+    FmEngineHandle engine, float* out_l, float* out_r, uint32_t samples)
+{
+    if (!engine || !out_l || !out_r) return FM_ERR_INVALID_ARG;
+
+    for (uint32_t i = 0; i < samples; ++i) {
+        float l = 0.0f, r = 0.0f;
+        {
+            std::lock_guard<std::mutex> lock(engine->write_mutex);
+            for (auto& chip : engine->chips)
+                chipCalcStereo(*chip, l, r);
+        }
+        out_l[i] = std::max(-1.0f, std::min(1.0f, l));
+        out_r[i] = std::max(-1.0f, std::min(1.0f, r));
+    }
+    return FM_OK;
+}
+
+} // extern "C"

@@ -1,0 +1,140 @@
+{
+  "sample_rate": 48000,
+  "global": {
+    "note_ms": 800,
+    "rest_ms": 200
+  },
+  "chips": {
+    "EPSG": {
+      "_comment": "AY8930 3ch. clock=2MHz. 互換モード f=clk/(16*TP), 拡張モード f=clk/(8*TP)",
+      "init": [
+        { "reg": "0x07", "val": "0x3F" },
+        { "reg": "0x08", "val": "0x00" },
+        { "reg": "0x09", "val": "0x00" },
+        { "reg": "0x0A", "val": "0x00" }
+      ],
+      "channels": [
+        {
+          "ch": 0,
+          "_comment": "互換モード CH A 261Hz",
+          "init": [
+            { "reg": "0x00", "val": "0xDE" },
+            { "reg": "0x01", "val": "0x01" },
+            { "reg": "0x08", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x3E" } ],
+          "key_off": [ { "reg": "0x08", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 1,
+          "_comment": "互換モード CH B 329Hz",
+          "init": [
+            { "reg": "0x02", "val": "0x7B" },
+            { "reg": "0x03", "val": "0x01" },
+            { "reg": "0x09", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x3D" } ],
+          "key_off": [ { "reg": "0x09", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 2,
+          "_comment": "互換モード CH C 392Hz",
+          "init": [
+            { "reg": "0x04", "val": "0x3F" },
+            { "reg": "0x05", "val": "0x01" },
+            { "reg": "0x0A", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x3B" } ],
+          "key_off": [ { "reg": "0x0A", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 3,
+          "_comment": "互換モード ノイズ (CH C)",
+          "init": [
+            { "reg": "0x06", "val": "0x0F" },
+            { "reg": "0x0A", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x1F" } ],
+          "key_off": [ { "reg": "0x0A", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 4,
+          "_comment": "互換モード ハードウェアエンベロープ CH A (16step, shape=0x0A)",
+          "init": [
+            { "reg": "0x00", "val": "0xDE" },
+            { "reg": "0x01", "val": "0x01" },
+            { "reg": "0x0B", "val": "0x00" },
+            { "reg": "0x0C", "val": "0x18" },
+            { "reg": "0x08", "val": "0x10" },
+            { "reg": "0x0D", "val": "0x0A" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x3E" } ],
+          "key_off": [ { "reg": "0x08", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 5,
+          "_comment": "拡張モード CH A 261Hz duty 50% volume 5bit",
+          "init": [
+            { "reg": "0x0D", "val": "0xA0" },
+            { "reg": "0x00", "val": "0xBC" },
+            { "reg": "0x01", "val": "0x03" },
+            { "reg": "0x08", "val": "0x1F" },
+            { "reg": "0x0D", "val": "0xB0" },
+            { "reg": "0x06", "val": "0x04" },
+            { "reg": "0x0D", "val": "0xA0" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x3E" } ],
+          "key_off": [ { "reg": "0x08", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 6,
+          "_comment": "拡張モード CH A 261Hz duty 12.5%",
+          "init": [
+            { "reg": "0x0D", "val": "0xA0" },
+            { "reg": "0x00", "val": "0xBC" },
+            { "reg": "0x01", "val": "0x03" },
+            { "reg": "0x08", "val": "0x1F" },
+            { "reg": "0x0D", "val": "0xB0" },
+            { "reg": "0x06", "val": "0x02" },
+            { "reg": "0x0D", "val": "0xA0" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x3E" } ],
+          "key_off": [ { "reg": "0x08", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 7,
+          "_comment": "拡張モード CH B 専用エンベロープ (32step, shape=0x0A)",
+          "init": [
+            { "reg": "0x0D", "val": "0xA0" },
+            { "reg": "0x02", "val": "0xBC" },
+            { "reg": "0x03", "val": "0x03" },
+            { "reg": "0x09", "val": "0x20" },
+            { "reg": "0x0D", "val": "0xB0" },
+            { "reg": "0x00", "val": "0x00" },
+            { "reg": "0x01", "val": "0x10" },
+            { "reg": "0x04", "val": "0x0A" },
+            { "reg": "0x07", "val": "0x04" },
+            { "reg": "0x0D", "val": "0xA0" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x3D" } ],
+          "key_off": [ { "reg": "0x09", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 8,
+          "_comment": "拡張モード ノイズ AND/OR マスク (CH C)",
+          "init": [
+            { "reg": "0x0D", "val": "0xA0" },
+            { "reg": "0x06", "val": "0x20" },
+            { "reg": "0x0A", "val": "0x1F" },
+            { "reg": "0x0D", "val": "0xB0" },
+            { "reg": "0x09", "val": "0x0F" },
+            { "reg": "0x0A", "val": "0x10" },
+            { "reg": "0x0D", "val": "0xA0" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x1F" } ],
+          "key_off": [ { "reg": "0x0A", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        }
+      ]
+    }
+  }
+}
