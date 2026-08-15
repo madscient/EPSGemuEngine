@@ -3,8 +3,11 @@
 // 統合コア:
 //   ay8910 (MAME 由来 / furnace fork)
 //     → EPSG (AY8930) / SSG (YM2149) / PSG (AY-3-8910) / PSG2 (AY-3-8914)
+//   Ymz705 (ay8910 の YM2149 を派生)
+//     → SSGS (YMZ705 の SSG 互換部)
 
 #include "FmEngineApi.h"
+#include "Ymz705.h"
 #include "../extern/ay8910/ay8910.h"
 
 #include <cstring>
@@ -28,6 +31,7 @@ enum class ChipKind {
     SSG,   // YM2149
     PSG,   // AY-3-8910
     PSG2,  // AY-3-8914 (レジスタ配置が異なる)
+    SSGS,  // YMZ705    (YM2149 2 系統 + パンポット)
 };
 
 // =========================================================
@@ -42,12 +46,14 @@ struct ChipEntry {
 
     // コアの基底クラスに仮想デストラクタがないため、
     // 具象型のデストラクタを保持できる shared_ptr で持つ
-    std::shared_ptr<ay8910_device> dev;
+    std::shared_ptr<ay8910_device> dev;      // EPSG / SSG / PSG / PSG2
+    std::unique_ptr<ymz705_device> ymz705;   // SSGS
 
     // native_rate → sample_rate のデシメーション状態
     double resample_step = 1.0;   // 出力1サンプルあたりの native ステップ数
     double tick_remain   = 0.0;   // 現在の native サンプルの未消費分
-    float  tick_value    = 0.0f;  // 現在の native サンプル値
+    float  tick_l        = 0.0f;  // 現在の native サンプル値 (L)
+    float  tick_r        = 0.0f;  // 現在の native サンプル値 (R)
     float  dc_offset     = 0.0f;  // 全チャンネル無音時の出力レベル
 
     float gain_l = 1.0f;
@@ -77,6 +83,7 @@ static const ChipDesc kChipTable[] = {
     { "SSG",  ChipKind::SSG,  2000000 },  // YM2149
     { "PSG",  ChipKind::PSG,  2000000 },  // AY-3-8910
     { "PSG2", ChipKind::PSG2, 2000000 },  // AY-3-8914
+    { "SSGS", ChipKind::SSGS, 4096000 },  // YMZ705
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
 
@@ -89,21 +96,43 @@ static const ChipDesc* findChipDesc(const char* name) {
 }
 
 // =========================================================
+//  YMZ705 の SSG ブロック動作クロック
+//  マスタークロックは 4.096MHz か 6.144MHz の 2 択で、S6M ピンの指定に
+//  応じて 1/2 または 1/3 に分周され、いずれも 2.048MHz になる。
+//  境界値は 2 つの規定値の中点を採る
+// =========================================================
+static uint32_t ssgsInternalClock(uint32_t master_clock) {
+    return master_clock / ((master_clock >= 5120000) ? 3 : 2);
+}
+
+// =========================================================
 //  コアの内部ステップレート
 //  AY8930 はトーンカウンタを AY-3-8910 の 2 倍の速度で回すため
 //  ステップレートも 2 倍になる (拡張モードの分解能に対応する)
 // =========================================================
 static uint32_t nativeRate(ChipKind kind, uint32_t clock) {
-    return (kind == ChipKind::EPSG) ? clock / 4 : clock / 8;
+    switch (kind) {
+    case ChipKind::EPSG: return clock / 4;
+    case ChipKind::SSGS: return ssgsInternalClock(clock) / 8;
+    default:             return clock / 8;
+    }
 }
 
 // =========================================================
-//  1 native ステップ生成 (3ch 合成, DC 除去済み)
+//  1 native ステップ生成 (DC 除去済み)
+//  SSGS はチャンネルごとのパンポットを適用した L/R、
+//  それ以外は 3ch を合成したモノラル値を L/R 双方に返す
 // =========================================================
-static float chipStep(ChipEntry& c) {
+static void chipStep(ChipEntry& c, float& out_l, float& out_r) {
+    if (c.ymz705) {
+        out_l = 0.0f;
+        out_r = 0.0f;
+        c.ymz705->step(out_l, out_r);
+        return;
+    }
     short buf[ay8910_device::NUM_CHANNELS] = { 0, 0, 0 };
     c.dev->sound_stream_update(buf, 1);
-    return (float)(buf[0] + buf[1] + buf[2]) - c.dc_offset;
+    out_l = out_r = (float)(buf[0] + buf[1] + buf[2]) - c.dc_offset;
 }
 
 // =========================================================
@@ -120,22 +149,31 @@ static std::unique_ptr<ChipEntry> createChip(
     e->native_rate = nativeRate(desc.kind, e->clock);
     if (e->native_rate == 0) return nullptr;
 
-    switch (desc.kind) {
-    case ChipKind::EPSG: e->dev = std::make_shared<ay8930_device>(e->native_rate); break;
-    case ChipKind::SSG:  e->dev = std::make_shared<ym2149_device>(e->native_rate); break;
-    case ChipKind::PSG:  e->dev = std::make_shared<ay8910_device>(e->native_rate); break;
-    case ChipKind::PSG2: e->dev = std::make_shared<ay8914_device>(e->native_rate); break;
-    }
-    if (!e->dev) return nullptr;
+    if (desc.kind == ChipKind::SSGS) {
+        e->ymz705 = std::make_unique<ymz705_device>(ssgsInternalClock(e->clock));
+        if (!e->ymz705) return nullptr;
+        e->ymz705->start();
+    } else {
+        switch (desc.kind) {
+        case ChipKind::EPSG: e->dev = std::make_shared<ay8930_device>(e->native_rate); break;
+        case ChipKind::SSG:  e->dev = std::make_shared<ym2149_device>(e->native_rate); break;
+        case ChipKind::PSG:  e->dev = std::make_shared<ay8910_device>(e->native_rate); break;
+        case ChipKind::PSG2: e->dev = std::make_shared<ay8914_device>(e->native_rate); break;
+        default: break;
+        }
+        if (!e->dev) return nullptr;
 
-    e->dev->device_start();
-    e->dev->device_reset();
+        e->dev->device_start();
+        e->dev->device_reset();
+
+        // コアの出力は 0V を負値、電源電圧側を正値で表す片極性信号なので、
+        // リセット直後 (全チャンネル無音) のレベルを DC 成分として控えておく
+        short buf[ay8910_device::NUM_CHANNELS] = { 0, 0, 0 };
+        e->dev->sound_stream_update(buf, 1);
+        e->dc_offset = (float)(buf[0] + buf[1] + buf[2]);
+    }
 
     e->resample_step = (double)e->native_rate / (double)sample_rate;
-
-    // コアの出力は 0V を負値、電源電圧側を正値で表す片極性信号なので、
-    // リセット直後 (全チャンネル無音) のレベルを DC 成分として控えておく
-    e->dc_offset = chipStep(*e);
 
     return e;
 }
@@ -147,6 +185,10 @@ static std::unique_ptr<ChipEntry> createChip(
 //  AY-3-8914 はレジスタ配置が異なるため専用ハンドラを通す
 // =========================================================
 static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val) {
+    if (c.ymz705) {
+        c.ymz705->write(reg, val);
+        return;
+    }
     if (c.kind == ChipKind::PSG2) {
         static_cast<ay8914_device*>(c.dev.get())->write(reg, val);
         return;
@@ -160,21 +202,22 @@ static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val) {
 //  native_rate から sample_rate への区間平均 (integrate & dump)
 // =========================================================
 static void chipCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
-    double need = c.resample_step;
-    double acc  = 0.0;
+    double need  = c.resample_step;
+    double acc_l = 0.0;
+    double acc_r = 0.0;
     while (need > 0.0) {
         if (c.tick_remain <= 0.0) {
-            c.tick_value  = chipStep(c);
+            chipStep(c, c.tick_l, c.tick_r);
             c.tick_remain = 1.0;
         }
         const double take = std::min(need, c.tick_remain);
-        acc          += (double)c.tick_value * take;
+        acc_l        += (double)c.tick_l * take;
+        acc_r        += (double)c.tick_r * take;
         c.tick_remain -= take;
         need          -= take;
     }
-    const float v = (float)(acc / c.resample_step) * kOutputScale;
-    out_l += v * c.gain_l;
-    out_r += v * c.gain_r;
+    out_l += (float)(acc_l / c.resample_step) * kOutputScale * c.gain_l;
+    out_r += (float)(acc_r / c.resample_step) * kOutputScale * c.gain_r;
 }
 
 // =========================================================

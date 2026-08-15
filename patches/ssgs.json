@@ -1,0 +1,160 @@
+{
+  "sample_rate": 48000,
+  "global": {
+    "note_ms": 800,
+    "rest_ms": 200
+  },
+  "chips": {
+    "SSGS": {
+      "_comment": "YMZ705 SSG 2 系統 + パンポット。clock=4.096MHz → 内部 2.048MHz, f=clk/(16*TP)",
+      "init": [
+        { "reg": "0x07", "val": "0x3F" },
+        { "reg": "0x08", "val": "0x00" },
+        { "reg": "0x09", "val": "0x00" },
+        { "reg": "0x0A", "val": "0x00" },
+        { "reg": "0x27", "val": "0x3F" },
+        { "reg": "0x28", "val": "0x00" },
+        { "reg": "0x29", "val": "0x00" },
+        { "reg": "0x2A", "val": "0x00" }
+      ],
+      "channels": [
+        {
+          "ch": 0,
+          "_comment": "SSG-1 CH A 261Hz パン中央",
+          "init": [
+            { "reg": "0x00", "val": "0xE9" },
+            { "reg": "0x01", "val": "0x01" },
+            { "reg": "0x10", "val": "0x08" },
+            { "reg": "0x08", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x3E" } ],
+          "key_off": [ { "reg": "0x08", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 1,
+          "_comment": "SSG-1 CH B 329Hz パン左端",
+          "init": [
+            { "reg": "0x02", "val": "0x84" },
+            { "reg": "0x03", "val": "0x01" },
+            { "reg": "0x11", "val": "0x00" },
+            { "reg": "0x09", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x3D" } ],
+          "key_off": [ { "reg": "0x09", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 2,
+          "_comment": "SSG-1 CH C 392Hz パン右端",
+          "init": [
+            { "reg": "0x04", "val": "0x47" },
+            { "reg": "0x05", "val": "0x01" },
+            { "reg": "0x12", "val": "0x0F" },
+            { "reg": "0x0A", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x3B" } ],
+          "key_off": [ { "reg": "0x0A", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 3,
+          "_comment": "SSG-1 ノイズ (CH C) パン中央",
+          "init": [
+            { "reg": "0x06", "val": "0x0F" },
+            { "reg": "0x12", "val": "0x08" },
+            { "reg": "0x0A", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x1F" } ],
+          "key_off": [ { "reg": "0x0A", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 4,
+          "_comment": "SSG-1 ハードウェアエンベロープ CH A (shape=0x0A) パン中央",
+          "init": [
+            { "reg": "0x00", "val": "0xE9" },
+            { "reg": "0x01", "val": "0x01" },
+            { "reg": "0x0B", "val": "0x70" },
+            { "reg": "0x0C", "val": "0x17" },
+            { "reg": "0x10", "val": "0x08" },
+            { "reg": "0x08", "val": "0x10" },
+            { "reg": "0x0D", "val": "0x0A" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x3E" } ],
+          "key_off": [ { "reg": "0x08", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" } ]
+        },
+        {
+          "ch": 5,
+          "_comment": "SSG-2 CH A 261Hz パン中央",
+          "init": [
+            { "reg": "0x20", "val": "0xE9" },
+            { "reg": "0x21", "val": "0x01" },
+            { "reg": "0x30", "val": "0x08" },
+            { "reg": "0x28", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x27", "val": "0x3E" } ],
+          "key_off": [ { "reg": "0x28", "val": "0x00" }, { "reg": "0x27", "val": "0x3F" } ]
+        },
+        {
+          "ch": 6,
+          "_comment": "SSG-2 CH B 329Hz パン左寄り (P=4, R は -6dB 相当)",
+          "init": [
+            { "reg": "0x22", "val": "0x84" },
+            { "reg": "0x23", "val": "0x01" },
+            { "reg": "0x31", "val": "0x04" },
+            { "reg": "0x29", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x27", "val": "0x3D" } ],
+          "key_off": [ { "reg": "0x29", "val": "0x00" }, { "reg": "0x27", "val": "0x3F" } ]
+        },
+        {
+          "ch": 7,
+          "_comment": "SSG-2 CH C 392Hz パン右寄り (P=11)",
+          "init": [
+            { "reg": "0x24", "val": "0x47" },
+            { "reg": "0x25", "val": "0x01" },
+            { "reg": "0x32", "val": "0x0B" },
+            { "reg": "0x2A", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x27", "val": "0x3B" } ],
+          "key_off": [ { "reg": "0x2A", "val": "0x00" }, { "reg": "0x27", "val": "0x3F" } ]
+        },
+        {
+          "ch": 8,
+          "_comment": "SSG-2 ノイズ (CH C) パン中央",
+          "init": [
+            { "reg": "0x26", "val": "0x0F" },
+            { "reg": "0x32", "val": "0x08" },
+            { "reg": "0x2A", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x27", "val": "0x1F" } ],
+          "key_off": [ { "reg": "0x2A", "val": "0x00" }, { "reg": "0x27", "val": "0x3F" } ]
+        },
+        {
+          "ch": 9,
+          "_comment": "2 系統同時発音。SSG-1 が左、SSG-2 が右に 6ch すべてを配置",
+          "init": [
+            { "reg": "0x00", "val": "0xE9" }, { "reg": "0x01", "val": "0x01" },
+            { "reg": "0x02", "val": "0x84" }, { "reg": "0x03", "val": "0x01" },
+            { "reg": "0x04", "val": "0x47" }, { "reg": "0x05", "val": "0x01" },
+            { "reg": "0x10", "val": "0x00" }, { "reg": "0x11", "val": "0x00" },
+            { "reg": "0x12", "val": "0x00" },
+            { "reg": "0x08", "val": "0x0F" }, { "reg": "0x09", "val": "0x0F" },
+            { "reg": "0x0A", "val": "0x0F" },
+            { "reg": "0x20", "val": "0xF5" }, { "reg": "0x21", "val": "0x00" },
+            { "reg": "0x22", "val": "0xC2" }, { "reg": "0x23", "val": "0x00" },
+            { "reg": "0x24", "val": "0xA3" }, { "reg": "0x25", "val": "0x00" },
+            { "reg": "0x30", "val": "0x0F" }, { "reg": "0x31", "val": "0x0F" },
+            { "reg": "0x32", "val": "0x0F" },
+            { "reg": "0x28", "val": "0x0F" }, { "reg": "0x29", "val": "0x0F" },
+            { "reg": "0x2A", "val": "0x0F" }
+          ],
+          "key_on":  [ { "reg": "0x07", "val": "0x38" }, { "reg": "0x27", "val": "0x38" } ],
+          "key_off": [
+            { "reg": "0x08", "val": "0x00" }, { "reg": "0x09", "val": "0x00" },
+            { "reg": "0x0A", "val": "0x00" }, { "reg": "0x07", "val": "0x3F" },
+            { "reg": "0x28", "val": "0x00" }, { "reg": "0x29", "val": "0x00" },
+            { "reg": "0x2A", "val": "0x00" }, { "reg": "0x27", "val": "0x3F" }
+          ]
+        }
+      ]
+    }
+  }
+}

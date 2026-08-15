@@ -14,6 +14,7 @@ set(CORE_SOURCES
 
 set(ENGINE_SOURCES
     src/EPSGemuEngine.cpp
+    src/Ymz705.cpp
 )
 
 # =======================================================
