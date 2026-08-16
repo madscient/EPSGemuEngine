@@ -3,11 +3,11 @@
 // 統合コア:
 //   ay8910 (MAME 由来 / furnace fork)
 //     → EPSG (AY8930) / SSG (YM2149) / PSG (AY-3-8910) / PSG2 (AY-3-8914)
-//   Ymz705 (ay8910 の YM2149 を派生)
-//     → SSGS (YMZ705) / SSGS2 (YMZ732) の SSG 互換部
+//   YmzSsg (ay8910 の YM2149 を派生)
+//     → SSGS (YMZ705) / SSGS2 (YMZ732) / SSGS3 (YMZ771) の SSG 互換部
 
 #include "FmEngineApi.h"
-#include "Ymz705.h"
+#include "YmzSsg.h"
 #include "../extern/ay8910/ay8910.h"
 
 #include <cstring>
@@ -33,11 +33,12 @@ enum class ChipKind {
     PSG2,  // AY-3-8914 (レジスタ配置が異なる)
     SSGS,  // YMZ705    (YM2149 2 系統 + パンポット)
     SSGS2, // YMZ732    (YMZ705 とレジスタ互換。分周比のみ異なる)
+    SSGS3, // YMZ771    (レジスタ配置が異なり、パンポットが 5bit)
 };
 
-// SSG 部が YMZ705 系のチップか
+// SSG を 2 系統持つ YMZ 系のチップか
 static bool isSsgsFamily(ChipKind kind) {
-    return kind == ChipKind::SSGS || kind == ChipKind::SSGS2;
+    return kind == ChipKind::SSGS || kind == ChipKind::SSGS2 || kind == ChipKind::SSGS3;
 }
 
 // =========================================================
@@ -53,7 +54,7 @@ struct ChipEntry {
     // コアの基底クラスに仮想デストラクタがないため、
     // 具象型のデストラクタを保持できる shared_ptr で持つ
     std::shared_ptr<ay8910_device> dev;      // EPSG / SSG / PSG / PSG2
-    std::unique_ptr<ymz705_device> ymz705;   // SSGS / SSGS2
+    std::unique_ptr<ymz_ssg_chip>  ssgs;     // SSGS / SSGS2 / SSGS3
 
     // native_rate → sample_rate のデシメーション状態
     double resample_step = 1.0;   // 出力1サンプルあたりの native ステップ数
@@ -91,6 +92,7 @@ static const ChipDesc kChipTable[] = {
     { "PSG2", ChipKind::PSG2, 2000000 },  // AY-3-8914
     { "SSGS",  ChipKind::SSGS,   4096000 },  // YMZ705
     { "SSGS2", ChipKind::SSGS2, 12288000 },  // YMZ732
+    { "SSGS3", ChipKind::SSGS3, 16384000 },  // YMZ771
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
 
@@ -107,9 +109,12 @@ static const ChipDesc* findChipDesc(const char* name) {
 //  YMZ705 のマスタークロックは 4.096MHz か 6.144MHz の 2 択で、S6M ピンの
 //  指定に応じて 1/2 または 1/3 に分周される。境界値は 2 つの規定値の中点を採る。
 //  YMZ732 は 12.288MHz を 1/6 に分周する。
-//  どちらも規定のマスタークロックでは 2.048MHz になる
+//  YMZ771 は SSG ブロックの動作クロックがデータシートに記載されていないが、
+//  マスタークロック 16.384MHz の 1/8 がファミリ共通の 2.048MHz と一致する。
+//  いずれも規定のマスタークロックでは 2.048MHz になる
 // =========================================================
 static uint32_t ssgsInternalClock(ChipKind kind, uint32_t master_clock) {
+    if (kind == ChipKind::SSGS3) return master_clock / 8;
     if (kind == ChipKind::SSGS2) return master_clock / 6;
     return master_clock / ((master_clock >= 5120000) ? 3 : 2);
 }
@@ -123,21 +128,22 @@ static uint32_t nativeRate(ChipKind kind, uint32_t clock) {
     switch (kind) {
     case ChipKind::EPSG:  return clock / 4;
     case ChipKind::SSGS:
-    case ChipKind::SSGS2: return ssgsInternalClock(kind, clock) / 8;
+    case ChipKind::SSGS2:
+    case ChipKind::SSGS3: return ssgsInternalClock(kind, clock) / 8;
     default:              return clock / 8;
     }
 }
 
 // =========================================================
 //  1 native ステップ生成 (DC 除去済み)
-//  SSGS / SSGS2 はチャンネルごとのパンポットを適用した L/R、
+//  SSGS 系はチャンネルごとのパンポットを適用した L/R、
 //  それ以外は 3ch を合成したモノラル値を L/R 双方に返す
 // =========================================================
 static void chipStep(ChipEntry& c, float& out_l, float& out_r) {
-    if (c.ymz705) {
+    if (c.ssgs) {
         out_l = 0.0f;
         out_r = 0.0f;
-        c.ymz705->step(out_l, out_r);
+        c.ssgs->step(out_l, out_r);
         return;
     }
     short buf[ay8910_device::NUM_CHANNELS] = { 0, 0, 0 };
@@ -160,9 +166,13 @@ static std::unique_ptr<ChipEntry> createChip(
     if (e->native_rate == 0) return nullptr;
 
     if (isSsgsFamily(desc.kind)) {
-        e->ymz705 = std::make_unique<ymz705_device>(ssgsInternalClock(desc.kind, e->clock));
-        if (!e->ymz705) return nullptr;
-        e->ymz705->start();
+        const uint32_t ssg_clock = ssgsInternalClock(desc.kind, e->clock);
+        if (desc.kind == ChipKind::SSGS3)
+            e->ssgs = std::make_unique<ymz771_ssg_device>(ssg_clock);
+        else
+            e->ssgs = std::make_unique<ymz705_device>(ssg_clock);
+        if (!e->ssgs) return nullptr;
+        e->ssgs->start();
     } else {
         switch (desc.kind) {
         case ChipKind::EPSG: e->dev = std::make_shared<ay8930_device>(e->native_rate); break;
@@ -195,8 +205,8 @@ static std::unique_ptr<ChipEntry> createChip(
 //  AY-3-8914 はレジスタ配置が異なるため専用ハンドラを通す
 // =========================================================
 static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val) {
-    if (c.ymz705) {
-        c.ymz705->write(reg, val);
+    if (c.ssgs) {
+        c.ssgs->write(reg, val);
         return;
     }
     if (c.kind == ChipKind::PSG2) {
