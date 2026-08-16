@@ -52,12 +52,17 @@ void ymz_ssg_device::set_pan(int chan, uint8_t pan)
 
 // データシートにパンポット値と L/R レベルの対応の記載がないため、
 // 同世代・同ファミリの YMZ280B と同じ分配則を採る。
-// 中央値で両側全開、そこから離れるほど反対側だけが線形に絞られる
+// 中央値で両側全開、そこから離れるほど反対側だけが線形に絞られ、
+// 端の 2 段 (0 と 1) はどちらも片側全振りになる
 void ymz_ssg_device::pan_gain(uint8_t pan, float& gain_l, float& gain_r) const
 {
-    if (pan < m_pan_center) {
+    if (pan == m_pan_center) {
         gain_l = 1.0f;
-        gain_r = (float)pan / (float)m_pan_center;
+        gain_r = 1.0f;
+    } else if (pan < m_pan_center) {
+        gain_l = 1.0f;
+        gain_r = (pan == 0) ? 0.0f
+                            : (float)(pan - 1) / (float)(m_pan_center - 1);
     } else {
         gain_l = (float)(m_pan_max - pan) / (float)(m_pan_max - m_pan_center);
         gain_r = 1.0f;

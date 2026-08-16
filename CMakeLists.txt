@@ -11,14 +11,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CORE_SOURCES
     # ay8910  AY8930 / YM2149 / AY-3-8910 → EPSG / SSG / PSG
     extern/ay8910/ay8910.cpp
-    # mpeg_audio  AMM デコーダ → SSGS3
+    # mpeg_audio  AMM デコーダ → SSGS3 / AMMS-A
     extern/mpeg_audio/mpeg_audio.cpp
+    # ymz280b  YMZ280B → PCMD8
+    extern/ymz280b/ymz280b.cpp
 )
 
 set(ENGINE_SOURCES
     src/EPSGemuEngine.cpp
     src/YmzSsg.cpp
     src/Ymz770.cpp
+    src/YmzAdpcm.cpp
 )
 
 # =======================================================
@@ -32,6 +35,7 @@ target_include_directories(EPSGemuEngine PRIVATE
     src                     # FmEngineApi.h
     extern/ay8910
     extern/mpeg_audio
+    extern/ymz280b
 )
 
 target_compile_definitions(EPSGemuEngine PRIVATE FMENGINE_EXPORTS)

@@ -7,11 +7,17 @@
 //     → SSGS (YMZ705) / SSGS2 (YMZ732) / SSGS3 (YMZ771) の SSG 互換部
 //   Ymz770 (MAME 由来) + mpeg_audio (MAME 由来 / 無改変)
 //     → SSGS3 (YMZ771) の AMM フレーズ再生・シーケンサ部
+//   YmzAdpcm (YMZ280B のコーデックを流用)
+//     → SSGS (YMZ705) / SSGS2 (YMZ732) の ADPCM 再生部
+//   ymz280b (MAME 由来 / furnace fork)
+//     → PCMD8 (YMZ280B)
 
 #include "FmEngineApi.h"
 #include "YmzSsg.h"
 #include "Ymz770.h"
+#include "YmzAdpcm.h"
 #include "../extern/ay8910/ay8910.h"
+#include "../extern/ymz280b/ymz280b.h"
 
 #include <cstring>
 #include <string>
@@ -31,6 +37,10 @@ static constexpr float kOutputScale = 1.0f / 65536.0f;
 // 16.384MHz なら 32kHz になる。再生開始後は AMM のヘッダの fs に従う
 static constexpr uint32_t kAmmDivider = 512;
 
+// PCMD8 のコアは 8 ボイスの L/R を別々のバッファへ書き出す。
+// レジスタ変更を遅らせないよう、まとめずに 1 サンプルずつ生成する
+static constexpr uint32_t kPcmVoiceBufs = 16;
+
 // =========================================================
 //  チップ種別列挙
 // =========================================================
@@ -43,6 +53,7 @@ enum class ChipKind {
     SSGS2, // YMZ732    (YMZ705 とレジスタ互換。分周比のみ異なる)
     SSGS3, // YMZ771    (レジスタ配置が異なり、パンポットが 5bit)
     AMMSA, // YMZ770C   (AMM 部のみ。SSG を持たない)
+    PCMD8, // YMZ280B
 };
 
 // SSG を 2 系統持つ YMZ 系のチップか
@@ -53,6 +64,48 @@ static bool isSsgsFamily(ChipKind kind) {
 // AMM フレーズ再生部を持つチップか
 static bool hasAmm(ChipKind kind) {
     return kind == ChipKind::SSGS3 || kind == ChipKind::AMMSA;
+}
+
+// YMZ705 系の ADPCM 再生部を持つチップか
+static bool hasAdpcm(ChipKind kind) {
+    return kind == ChipKind::SSGS || kind == ChipKind::SSGS2;
+}
+
+// ay8910 コアをそのまま使うチップか
+static bool isAyFamily(ChipKind kind) {
+    return kind == ChipKind::EPSG || kind == ChipKind::SSG
+        || kind == ChipKind::PSG  || kind == ChipKind::PSG2;
+}
+
+// =========================================================
+//  低いレートのサンプル列を出力レートへ線形補間で伸ばす状態
+// =========================================================
+struct Interp {
+    double step  = 0.0;   // 出力1サンプルあたりの入力サンプル数
+    double phase = 1.0;   // prev と next の間の位相 (初回で next を読む)
+    float  prev_l = 0.0f, prev_r = 0.0f;
+    float  next_l = 0.0f, next_r = 0.0f;
+
+    void set_rate(uint32_t src_rate, uint32_t dst_rate) {
+        step = (double)src_rate / (double)dst_rate;
+    }
+};
+
+// next は入力を 1 サンプル取り出す
+template <typename NextFn>
+static void interpCalc(Interp& ip, NextFn next,
+                       float gain_l, float gain_r, float& out_l, float& out_r)
+{
+    ip.phase += ip.step;
+    while (ip.phase >= 1.0) {
+        ip.prev_l = ip.next_l;
+        ip.prev_r = ip.next_r;
+        next(ip.next_l, ip.next_r);
+        ip.phase -= 1.0;
+    }
+    const float t = (float)ip.phase;
+    out_l += (ip.prev_l + (ip.next_l - ip.prev_l) * t) * gain_l;
+    out_r += (ip.prev_r + (ip.next_r - ip.prev_r) * t) * gain_r;
 }
 
 // =========================================================
@@ -67,9 +120,11 @@ struct ChipEntry {
 
     // コアの基底クラスに仮想デストラクタがないため、
     // 具象型のデストラクタを保持できる shared_ptr で持つ
-    std::shared_ptr<ay8910_device>      dev;   // EPSG / SSG / PSG / PSG2
-    std::unique_ptr<ymz_ssg_chip>       ssgs;  // SSGS / SSGS2 / SSGS3 の SSG 部
-    std::unique_ptr<ymz770_amm_device>  amm;   // SSGS3 の AMM 部
+    std::shared_ptr<ay8910_device>      dev;    // EPSG / SSG / PSG / PSG2
+    std::unique_ptr<ymz_ssg_chip>       ssgs;   // SSGS / SSGS2 / SSGS3 の SSG 部
+    std::unique_ptr<ymz770_amm_device>  amm;    // SSGS3 / AMMS-A の AMM 部
+    std::unique_ptr<ymz_adpcm_device>   adpcm;  // SSGS / SSGS2 の ADPCM 部
+    std::unique_ptr<ymz280b_device>     pcm;    // PCMD8
 
     // native_rate → sample_rate のデシメーション状態
     double resample_step = 1.0;   // 出力1サンプルあたりの native ステップ数
@@ -78,16 +133,20 @@ struct ChipEntry {
     float  tick_r        = 0.0f;  // 現在の native サンプル値 (R)
     float  dc_offset     = 0.0f;  // 全チャンネル無音時の出力レベル
 
-    // AMM は SSG よりはるかに低いレートで動くため、専用に線形補間で伸ばす
-    uint32_t amm_rate  = 0;
-    double   amm_step  = 0.0;   // 出力1サンプルあたりの AMM サンプル数
-    double   amm_phase = 1.0;   // prev と next の間の位相 (初回で next を読む)
-    float    amm_prev_l = 0.0f, amm_prev_r = 0.0f;
-    float    amm_next_l = 0.0f, amm_next_r = 0.0f;
+    // 出力より低いレートで動くブロックの補間状態
+    Interp   amm_interp;
+    Interp   adpcm_interp;
+    Interp   pcm_interp;
+    uint32_t amm_rate = 0;        // AMM は fs が再生中に変わり得る
 
-    // AMM フレーズデータ ROM (寿命は呼び出し元が管理する)
-    const uint8_t* amm_rom      = nullptr;
-    uint32_t       amm_rom_size = 0;
+    // PCMD8 のコアが 8 ボイスの L/R を書き出す先
+    int16_t pcm_voice_out[kPcmVoiceBufs] = {};
+
+    // 外部メモリ (寿命は呼び出し元が管理する)
+    const uint8_t* amm_rom       = nullptr;
+    uint32_t       amm_rom_size  = 0;
+    const uint8_t* samp_rom      = nullptr;
+    uint32_t       samp_rom_size = 0;
 
     float gain_l = 1.0f;
     float gain_r = 1.0f;
@@ -120,6 +179,7 @@ static const ChipDesc kChipTable[] = {
     { "SSGS2", ChipKind::SSGS2, 12288000 },  // YMZ732
     { "SSGS3", ChipKind::SSGS3, 16384000 },  // YMZ771
     { "AMMS-A", ChipKind::AMMSA, 16384000 }, // YMZ770C
+    { "PCMD8", ChipKind::PCMD8, 16934400 },  // YMZ280B
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
 
@@ -159,6 +219,7 @@ static uint32_t nativeRate(ChipKind kind, uint32_t clock) {
     case ChipKind::SSGS2:
     case ChipKind::SSGS3: return ssgsInternalClock(kind, clock) / 8;
     case ChipKind::AMMSA: return clock / kAmmDivider;
+    case ChipKind::PCMD8: return clock / 384;
     default:              return clock / 8;
     }
 }
@@ -206,6 +267,18 @@ static std::unique_ptr<ChipEntry> createChip(
         e->ssgs->start();
     }
 
+    if (hasAdpcm(desc.kind)) {
+        e->adpcm = std::make_unique<ymz_adpcm_device>();
+        if (!e->adpcm) return nullptr;
+        e->adpcm_interp.set_rate(ymz_adpcm_device::kSampleRate, sample_rate);
+    }
+
+    if (desc.kind == ChipKind::PCMD8) {
+        e->pcm = std::make_unique<ymz280b_device>();
+        if (!e->pcm) return nullptr;
+        e->pcm_interp.set_rate(e->native_rate, sample_rate);
+    }
+
     if (hasAmm(desc.kind)) {
         e->amm = std::make_unique<ymz770_amm_device>(e->clock, kAmmDivider);
         if (!e->amm) return nullptr;
@@ -213,10 +286,10 @@ static std::unique_ptr<ChipEntry> createChip(
         // CPU からの書き込みと同じデコーダを経由させる
         e->amm->set_forward_write(forwardSequencerWrite, e.get());
         e->amm_rate = e->amm->sample_rate();
-        e->amm_step = (double)e->amm_rate / (double)sample_rate;
+        e->amm_interp.set_rate(e->amm_rate, sample_rate);
     }
 
-    if (!isSsgsFamily(desc.kind) && !hasAmm(desc.kind)) {
+    if (isAyFamily(desc.kind)) {
         switch (desc.kind) {
         case ChipKind::EPSG: e->dev = std::make_shared<ay8930_device>(e->native_rate); break;
         case ChipKind::SSG:  e->dev = std::make_shared<ym2149_device>(e->native_rate); break;
@@ -255,6 +328,13 @@ static void forwardSequencerWrite(void* context, uint8_t reg, uint8_t val) {
 }
 
 static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val) {
+    if (c.pcm) {
+        // コアは外部メモリの範囲検査をしないため、ROM 未設定なら触らない
+        if (!c.samp_rom) return;
+        c.pcm->write(0, reg);
+        c.pcm->write(1, val);
+        return;
+    }
     if (c.amm) {
         // SSGS3 は $10-$32 が SSG 部、それ以外が AMM 部のレジスタ。
         // SSG を持たない AMMS-A はすべて AMM 部へ渡す
@@ -265,7 +345,11 @@ static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val) {
         return;
     }
     if (c.ssgs) {
-        c.ssgs->write(reg, val);
+        // SSGS / SSGS2 は $40-$B3 が ADPCM 部
+        if (c.adpcm && reg >= 0x40 && reg <= 0xB3)
+            c.adpcm->write(reg, val);
+        else
+            c.ssgs->write(reg, val);
         return;
     }
     if (c.kind == ChipKind::PSG2) {
@@ -301,26 +385,48 @@ static void chipCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
 
 // =========================================================
 //  AMM 部の 1 出力サンプル
-//  再生レートは出力より低く、しかも AMM のフレームヘッダで途中から
-//  変わり得るため、区間平均ではなく線形補間で伸ばす
+//  fs は AMM のフレームヘッダで途中から変わり得る
 // =========================================================
 static void ammCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
     if (c.amm->sample_rate() != c.amm_rate) {
         c.amm_rate = c.amm->sample_rate();
-        c.amm_step = (double)c.amm_rate / (double)c.sample_rate;
+        c.amm_interp.set_rate(c.amm_rate, c.sample_rate);
     }
+    interpCalc(c.amm_interp,
+               [&c](float& l, float& r) { c.amm->step(l, r); },
+               c.gain_l, c.gain_r, out_l, out_r);
+}
 
-    c.amm_phase += c.amm_step;
-    while (c.amm_phase >= 1.0) {
-        c.amm_prev_l = c.amm_next_l;
-        c.amm_prev_r = c.amm_next_r;
-        c.amm->step(c.amm_next_l, c.amm_next_r);
-        c.amm_phase -= 1.0;
-    }
+// =========================================================
+//  ADPCM 部 (SSGS / SSGS2) の 1 出力サンプル
+// =========================================================
+static void adpcmCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
+    interpCalc(c.adpcm_interp,
+               [&c](float& l, float& r) { c.adpcm->step(l, r); },
+               c.gain_l, c.gain_r, out_l, out_r);
+}
 
-    const float t = (float)c.amm_phase;
-    out_l += (c.amm_prev_l + (c.amm_next_l - c.amm_prev_l) * t) * c.gain_l;
-    out_r += (c.amm_prev_r + (c.amm_next_r - c.amm_prev_r) * t) * c.gain_r;
+// =========================================================
+//  PCMD8 の 1 出力サンプル
+//  コアは 8 ボイスの L/R を別バッファへ書くので、合成は自前で行う
+// =========================================================
+static void pcmCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
+    interpCalc(c.pcm_interp, [&c](float& l, float& r) {
+        if (!c.samp_rom) { l = 0.0f; r = 0.0f; return; }
+
+        int16_t* ptrs[kPcmVoiceBufs];
+        for (uint32_t i = 0; i < kPcmVoiceBufs; ++i)
+            ptrs[i] = &c.pcm_voice_out[i];
+        c.pcm->sound_stream_update(ptrs, 1);
+
+        int32_t acc_l = 0, acc_r = 0;
+        for (uint32_t v = 0; v < kPcmVoiceBufs / 2; ++v) {
+            acc_l += c.pcm_voice_out[v * 2];
+            acc_r += c.pcm_voice_out[v * 2 + 1];
+        }
+        l = (float)acc_l / 32768.0f;
+        r = (float)acc_r / 32768.0f;
+    }, c.gain_l, c.gain_r, out_l, out_r);
 }
 
 // =========================================================
@@ -420,18 +526,39 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
 {
     if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
     ChipEntry& c = *engine->chips[chip_id];
-    if (mem_type != FM_MEM_AMM || !c.amm) return FM_ERR_UNAVAILABLE;
     if (size != 0 && !data) return FM_ERR_INVALID_ARG;
+    const uint8_t* rom  = (size != 0) ? data : nullptr;
+    const uint32_t bytes = (data != nullptr) ? size : 0;
 
     std::lock_guard<std::mutex> lock(engine->write_mutex);
-    c.amm_rom      = (size != 0) ? data : nullptr;
-    c.amm_rom_size = (data != nullptr) ? size : 0;
-    c.amm->set_rom(c.amm_rom, c.amm_rom_size);
 
-    // ROM 差し替えでレジスタもリセットされるため再生レートを取り直す
-    c.amm_rate = c.amm->sample_rate();
-    c.amm_step = (double)c.amm_rate / (double)c.sample_rate;
-    return FM_OK;
+    if (mem_type == FM_MEM_AMM && c.amm) {
+        c.amm_rom      = rom;
+        c.amm_rom_size = bytes;
+        c.amm->set_rom(rom, bytes);
+        // ROM 差し替えでレジスタもリセットされるため再生レートを取り直す
+        c.amm_rate = c.amm->sample_rate();
+        c.amm_interp.set_rate(c.amm_rate, c.sample_rate);
+        return FM_OK;
+    }
+
+    if (mem_type == FM_MEM_PCM && c.adpcm) {
+        c.samp_rom      = rom;
+        c.samp_rom_size = bytes;
+        c.adpcm->set_rom(rom, bytes);
+        return FM_OK;
+    }
+
+    if (mem_type == FM_MEM_PCM && c.pcm) {
+        c.samp_rom      = rom;
+        c.samp_rom_size = bytes;
+        // コアは読み書きとも生のポインタを添字で参照する
+        c.pcm->device_start(const_cast<uint8_t*>(rom));
+        c.pcm->device_reset();
+        return FM_OK;
+    }
+
+    return FM_ERR_UNAVAILABLE;
 }
 
 FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetMemorySize(
@@ -439,7 +566,9 @@ FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetMemorySize(
 {
     if (!engine || chip_id >= engine->chips.size()) return 0;
     const ChipEntry& c = *engine->chips[chip_id];
-    return (mem_type == FM_MEM_AMM) ? c.amm_rom_size : 0;
+    if (mem_type == FM_MEM_AMM) return c.amm_rom_size;
+    if (mem_type == FM_MEM_PCM) return c.samp_rom_size;
+    return 0;
 }
 
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_Generate(
@@ -454,6 +583,8 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_Generate(
             for (auto& chip : engine->chips) {
                 if (chip->ssgs || chip->dev) chipCalcStereo(*chip, l, r);
                 if (chip->amm)               ammCalcStereo(*chip, l, r);
+                if (chip->adpcm)             adpcmCalcStereo(*chip, l, r);
+                if (chip->pcm)               pcmCalcStereo(*chip, l, r);
             }
         }
         out_l[i] = std::max(-1.0f, std::min(1.0f, l));
