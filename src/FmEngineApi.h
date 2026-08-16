@@ -41,6 +41,7 @@ typedef enum FmMemoryType {
     FM_MEM_ADPCM_A = 1,  // ADPCM-A ROM (OPNA/OPNB/OPNBB)
     FM_MEM_ADPCM_B = 2,  // ADPCM-B ROM/RAM (OPNA/OPNB/OPNBB/Y8950)
     FM_MEM_PCM     = 3,  // PCM ROM (OPL4)
+    FM_MEM_AMM     = 4,  // AMM フレーズデータ ROM (YMZ770 系)
 } FmMemoryType;
 
 // ---- 不透明ハンドル -----------------------------------------------------

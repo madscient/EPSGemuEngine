@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(EPSGemuEngine VERSION 1.0.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+# mpeg_audio が std::numbers::pi を使うため C++20 が必要
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # =======================================================
@@ -10,11 +11,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CORE_SOURCES
     # ay8910  AY8930 / YM2149 / AY-3-8910 → EPSG / SSG / PSG
     extern/ay8910/ay8910.cpp
+    # mpeg_audio  AMM デコーダ → SSGS3
+    extern/mpeg_audio/mpeg_audio.cpp
 )
 
 set(ENGINE_SOURCES
     src/EPSGemuEngine.cpp
     src/YmzSsg.cpp
+    src/Ymz770.cpp
 )
 
 # =======================================================
@@ -27,6 +31,7 @@ add_library(EPSGemuEngine SHARED ${ENGINE_SOURCES} ${CORE_SOURCES})
 target_include_directories(EPSGemuEngine PRIVATE
     src                     # FmEngineApi.h
     extern/ay8910
+    extern/mpeg_audio
 )
 
 target_compile_definitions(EPSGemuEngine PRIVATE FMENGINE_EXPORTS)

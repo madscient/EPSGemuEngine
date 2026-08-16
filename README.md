@@ -10,7 +10,9 @@ MAME 由来の ay8910 コア ([furnace](https://github.com/tildearrow/furnace) f
 | パス | 由来 | チップ | FmEngineApi チップ名 |
 |---|---|---|---|
 | `extern/ay8910` | [furnace](https://github.com/tildearrow/furnace) `platform/sound/ay8910` ← [MAME](https://github.com/mamedev/mame) `sound/ay8910` | AY8930 / YM2149 / AY-3-8910 / AY-3-8914 | `EPSG` / `SSG` / `PSG` / `PSG2` |
-| `src/YmzSsg.*` | 上記コアの `ym2149_device` を派生 | YMZ705 / YMZ732 / YMZ771 | `SSGS` / `SSGS2` / `SSGS3` |
+| `extern/mpeg_audio` | [MAME](https://github.com/mamedev/mame) `sound/mpeg_audio` (無改変) | AMM デコーダ | `SSGS3` の一部 |
+| `src/YmzSsg.*` | 上記 ay8910 コアの `ym2149_device` を派生 | YMZ705 / YMZ732 / YMZ771 の SSG 部 | `SSGS` / `SSGS2` / `SSGS3` |
+| `src/Ymz770.*` | [MAME](https://github.com/mamedev/mame) `sound/ymz770` の `ymz770_device` を移植 | YMZ770 / YMZ771 の AMM 部 | `SSGS3` の一部 |
 
 ## 対応チップ一覧
 
@@ -23,6 +25,9 @@ MAME 由来の ay8910 コア ([furnace](https://github.com/tildearrow/furnace) f
 | `SSGS`  | YMZ705    | 4.096 MHz  | 内部クロック / 8 (256,000 Hz) |
 | `SSGS2` | YMZ732    | 12.288 MHz | 内部クロック / 8 (256,000 Hz) |
 | `SSGS3` | YMZ771    | 16.384 MHz | 内部クロック / 8 (256,000 Hz) |
+
+`SSGS3` は SSG 部に加えて AMM フレーズ再生部を持ちます。AMM 部は SSG 部とは
+別に fs (16 kHz / 32 kHz) で動作します。
 
 クロックは `FmEngine_AddChip` の `clock` 引数で変更できます (0 でデフォルト)。
 
@@ -50,10 +55,15 @@ EPSGemuEngine/
 ├── CMakeLists.txt
 ├── README.md
 ├── extern/
-│   └── ay8910/               ← フォークしたコア (無改変)
-│       ├── ay8910.h
-│       ├── ay8910.cpp
-│       └── README.md         ← 由来と上流追従の手順
+│   ├── ay8910/               ← フォークしたコア (無改変)
+│   │   ├── ay8910.h
+│   │   ├── ay8910.cpp
+│   │   └── README.md         ← 由来と上流追従の手順
+│   └── mpeg_audio/           ← フォークした AMM デコーダ (無改変)
+│       ├── mpeg_audio.h
+│       ├── mpeg_audio.cpp
+│       ├── emu.h             ← MAME フレームワークヘッダのシム
+│       └── README.md
 ├── patches/
 │   ├── epsg.json             ← FMEngineTest 用テストパッチ
 │   ├── psg2.json
@@ -63,10 +73,14 @@ EPSGemuEngine/
     ├── FmEngineApi.h         ← API ヘッダ (FMEngineTest と共通)
     ├── YmzSsg.h              ← YMZ 系 SSG 部 (ym2149_device の派生)
     ├── YmzSsg.cpp
+    ├── Ymz770.h              ← AMM フレーズ再生・シーケンサ部
+    ├── Ymz770.cpp
     └── EPSGemuEngine.cpp     ← エンジン実装
 ```
 
 ## ビルド
+
+AMM デコーダが `std::numbers::pi` を使うため C++20 が必要です。
 
 ### Windows (Visual Studio 2022)
 
@@ -293,11 +307,79 @@ SSG 全体のトータルボリュームが加わります。
 `0x32` は 6 チャンネル合成後にかかる線形ボリュームで、128 が 100% です。
 リセット直後は 0 なので、発音させるには値を設定する必要があります。
 
+## AMM フレーズ再生 (SSGS3)
+
+YMZ771 のフレーズ再生・シーケンサ部は YMZ770 (AMMS) と互換で、AMM
+(AMusement Music compression) 形式のフレーズデータを外部 ROM から再生します。
+
+### レジスタマップ
+
+| レジスタ | 内容 | ビット |
+|---|---|---|
+| `0x00` | 全体制御 | bit0 MUTE, bit1 DOEN |
+| `0x01` | AMM トータルボリューム VLMA | 8bit (128 で 100%) |
+| `0x02` | クリップリミッタ / ブーストレベル | bit4–5 CPL, bit0–2 BSL |
+| `0x40`+`4n` | チャンネル n フレーズナンバー MNS | 8bit |
+| `0x41`+`4n` | チャンネル n ボリューム VLM | 8bit (128 で 100%) |
+| `0x42`+`4n` | チャンネル n パン PAN | bit0–4 (0 が左、8 が中央、16 が右) |
+| `0x43`+`4n` | チャンネル n キーオン / ループ | bit1–2 KON, bit0 LOOP |
+| `0x80`+`0x10n` | シーケンサ n シーケンスナンバー SQSN | 8bit |
+| `0x81`+`0x10n` | シーケンサ n 起動 / ループ | bit1–2 SQON, bit0 SQLP |
+| `0x82` / `0x83` +`0x10n` | シーケンサ n ウエイトタイマー TMRH / TMRL | 16bit |
+| `0x86`+`0x10n` | シーケンサ n 終了時に停止する AMM チャンネル SQOF | 8bit |
+| `0x87`+`0x10n` | シーケンサ n 終了時に停止する SSG チャンネル SQOF_SSG | 6bit |
+
+チャンネルは 0–7、シーケンサは 0–7 です。KON の 2bit がともに 1 のときは
+「再生継続」で、再生中のチャンネルは鳴らし直されません。
+
+### フレーズデータ ROM
+
+`FmEngine_SetMemory` に `FM_MEM_AMM` を指定して渡します。データの寿命は
+呼び出し元が管理します。
+
+```c
+FmEngine_SetMemory(engine, chip_id, FM_MEM_AMM, rom_data, rom_size);
+```
+
+ROM 先頭には以下のテーブルが並びます。いずれも 1 エントリ 4 バイトで、
+先頭バイトを除いた 24bit が MSB ファーストのアドレスです。
+
+| アドレス | 内容 |
+|---|---|
+| `0x0000`–`0x03FF` | フレーズ 0–255 のデータ開始アドレス |
+| `0x0400`–`0x07FF` | シーケンスコード 0–255 のデータ開始アドレス |
+| `0x0800`–`0x0BFF` | シンプルアクセスコード 0–255 のデータ開始アドレス |
+| `0x0C00`– | フレーズデータ / シーケンスコードデータの本体 |
+
+フレーズテーブルの先頭バイトの bit4–6 は、AMMSL 系 CBR サンプル用の
+パラメータ索引としてデコーダに渡されます。
+
+### シーケンサ
+
+シーケンスコードは「レジスタ番号 + データ」の 2 バイト対の並びで、
+1 サンプル周期につき 1 対を実行します。
+
+| レジスタ番号 | 動作 |
+|---|---|
+| `0x0E` | ウエイト (TMR × 32 + 32 − 1 サンプル) |
+| `0x0F` | 終了。SQOF のチャンネルを停止し、SQLP が 1 なら先頭へ戻る |
+| その他 | そのレジスタへの書き込み |
+
+書き込みは CPU からの書き込みと同じ経路を通るため、シーケンスコードから
+SSG 部のレジスタ (`0x10`–`0x32`) も設定できます。
+
 ### 対象外の機能
 
-AMM フレーズ再生 (`0x00`–`0x02`, `0x40`–`0x5F`)、シーケンサ (`0x80`–`0xF8`)、
-シンプルアクセスモードは実装対象外です。`0x10`–`0x32` 以外への書き込みは
-無視されます。
+以下は動作が判明していないため実装していません。移植元の MAME 実装でも
+同じく未実装です。
+
+| 対象 | 内容 |
+|---|---|
+| TGST / TGEN (`0x84` / `0x85`) | シーケンサの ON / OFF トリガ |
+| TEMPO (`0x88`) | ウエイトタイマーのスピード制御 |
+| SQOF_SSG (`0x87`) | 値は保持しますが、シーケンサ終了時の SSG 停止は行いません |
+| シンプルアクセスモード | ROM 上のコードは読みません |
+| バスブースト / イコライザ | BSL はゲインとしてのみ働き、フィルタは通しません |
 
 ## 実装上の注意
 
@@ -312,8 +394,9 @@ AMM フレーズ再生 (`0x00`–`0x02`, `0x40`–`0x5F`)、シーケンサ (`0x
 `PSG2` は専用のアドレスデコーダを通すため、`reg` は下位 4bit だけが使われます。
 
 `SSGS` / `SSGS2` は `reg` をアドレスデコーダとして扱い、`0x00`–`0x1F` を SSG-1、
-`0x20`–`0x3F` を SSG-2 に振り分けます。`SSGS3` も同様にデコードします。
-いずれもアドレスラッチによる非選択状態は生じません。
+`0x20`–`0x3F` を SSG-2 に振り分けます。`SSGS3` は `0x10`–`0x32` を SSG 部へ、
+それ以外を AMM 部へ振り分けます。いずれもアドレスラッチによる非選択状態は
+生じません。
 
 `port` は使用しません。
 
@@ -334,9 +417,17 @@ AMM フレーズ再生 (`0x00`–`0x02`, `0x40`–`0x5F`)、シーケンサ (`0x
 
 ネイティブレートからエンジンのサンプルレートへの変換は区間平均で行います。
 
+`SSGS3` の AMM 部はネイティブレートより大幅に低い fs (16 kHz / 32 kHz) で
+動作し、しかも fs は再生中に AMM のフレームヘッダで変わり得ます。このため
+AMM 部だけは区間平均ではなく線形補間でサンプルレートへ変換します。
+AMM 出力は 16bit フルスケールを 1.0 とします。
+
 ### 外部メモリ
 
-外部メモリを持たないため、`FmEngine_SetMemory` は `FM_ERR_UNAVAILABLE` を返します。
+`SSGS3` は `FM_MEM_AMM` でフレーズデータ ROM を受け取ります。それ以外の
+チップと種別では `FmEngine_SetMemory` は `FM_ERR_UNAVAILABLE` を返します。
+
+ROM を差し替えると AMM 部はリセットされます (SSG 部は影響を受けません)。
 
 ## テストパッチ
 
@@ -356,6 +447,8 @@ AMM フレーズ再生 (`0x00`–`0x02`, `0x40`–`0x5F`)、シーケンサ (`0x
 |---|---|
 | 本体 (`src/`, `patches/`, ビルドスクリプト, ドキュメント) | **MIT** — [LICENSE](LICENSE) |
 | `extern/ay8910` (MAME / furnace 由来のコア) | **BSD-3-Clause** — [extern/ay8910/LICENSE](extern/ay8910/LICENSE) |
+| `extern/mpeg_audio` (MAME 由来の AMM デコーダ) | **BSD-3-Clause** — [extern/mpeg_audio/LICENSE](extern/mpeg_audio/LICENSE) |
+| `src/Ymz770.*` (MAME 由来の AMM 再生部の移植) | **BSD-3-Clause** |
 
 DLL などのバイナリを配布する場合は、コアの著作権表示・条件文・免責を
 ドキュメント等に同梱してください。コアの由来は
