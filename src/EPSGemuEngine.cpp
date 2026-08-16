@@ -26,8 +26,9 @@
 // 同一チップを扱う他エンジン (DSAemuEngine の SSG) と音量が揃う係数
 static constexpr float kOutputScale = 1.0f / 65536.0f;
 
-// YMZ771 のマスタークロックから AMM 再生レートを得る分周比。
-// 16.384MHz / 512 = 32kHz で、リセット直後の規定状態と一致する
+// マスタークロックから AMM 再生レートを得る分周比。
+// データシートはリセット後の初期状態を「fs = XI / 512」と規定しており、
+// 16.384MHz なら 32kHz になる。再生開始後は AMM のヘッダの fs に従う
 static constexpr uint32_t kAmmDivider = 512;
 
 // =========================================================
@@ -41,11 +42,17 @@ enum class ChipKind {
     SSGS,  // YMZ705    (YM2149 2 系統 + パンポット)
     SSGS2, // YMZ732    (YMZ705 とレジスタ互換。分周比のみ異なる)
     SSGS3, // YMZ771    (レジスタ配置が異なり、パンポットが 5bit)
+    AMMSA, // YMZ770C   (AMM 部のみ。SSG を持たない)
 };
 
 // SSG を 2 系統持つ YMZ 系のチップか
 static bool isSsgsFamily(ChipKind kind) {
     return kind == ChipKind::SSGS || kind == ChipKind::SSGS2 || kind == ChipKind::SSGS3;
+}
+
+// AMM フレーズ再生部を持つチップか
+static bool hasAmm(ChipKind kind) {
+    return kind == ChipKind::SSGS3 || kind == ChipKind::AMMSA;
 }
 
 // =========================================================
@@ -112,6 +119,7 @@ static const ChipDesc kChipTable[] = {
     { "SSGS",  ChipKind::SSGS,   4096000 },  // YMZ705
     { "SSGS2", ChipKind::SSGS2, 12288000 },  // YMZ732
     { "SSGS3", ChipKind::SSGS3, 16384000 },  // YMZ771
+    { "AMMS-A", ChipKind::AMMSA, 16384000 }, // YMZ770C
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
 
@@ -142,6 +150,7 @@ static uint32_t ssgsInternalClock(ChipKind kind, uint32_t master_clock) {
 //  コアの内部ステップレート
 //  AY8930 はトーンカウンタを AY-3-8910 の 2 倍の速度で回すため
 //  ステップレートも 2 倍になる (拡張モードの分解能に対応する)
+//  SSG を持たない AMMS-A はフレーズ再生レートを返す
 // =========================================================
 static uint32_t nativeRate(ChipKind kind, uint32_t clock) {
     switch (kind) {
@@ -149,6 +158,7 @@ static uint32_t nativeRate(ChipKind kind, uint32_t clock) {
     case ChipKind::SSGS:
     case ChipKind::SSGS2:
     case ChipKind::SSGS3: return ssgsInternalClock(kind, clock) / 8;
+    case ChipKind::AMMSA: return clock / kAmmDivider;
     default:              return clock / 8;
     }
 }
@@ -194,19 +204,19 @@ static std::unique_ptr<ChipEntry> createChip(
             e->ssgs = std::make_unique<ymz705_device>(ssg_clock);
         if (!e->ssgs) return nullptr;
         e->ssgs->start();
+    }
 
-        if (desc.kind == ChipKind::SSGS3) {
-            // リセット直後は fs=32kHz 相当の状態と規定されている。
-            // 再生開始後は AMM のフレームヘッダが示す fs に追従する
-            e->amm = std::make_unique<ymz770_amm_device>(e->clock, kAmmDivider);
-            if (!e->amm) return nullptr;
-            // シーケンスコードは SSG 部のレジスタも書くため、
-            // CPU からの書き込みと同じデコーダを経由させる
-            e->amm->set_forward_write(forwardSequencerWrite, e.get());
-            e->amm_rate = e->amm->sample_rate();
-            e->amm_step = (double)e->amm_rate / (double)sample_rate;
-        }
-    } else {
+    if (hasAmm(desc.kind)) {
+        e->amm = std::make_unique<ymz770_amm_device>(e->clock, kAmmDivider);
+        if (!e->amm) return nullptr;
+        // シーケンスコードは SSG 部のレジスタも書くため、
+        // CPU からの書き込みと同じデコーダを経由させる
+        e->amm->set_forward_write(forwardSequencerWrite, e.get());
+        e->amm_rate = e->amm->sample_rate();
+        e->amm_step = (double)e->amm_rate / (double)sample_rate;
+    }
+
+    if (!isSsgsFamily(desc.kind) && !hasAmm(desc.kind)) {
         switch (desc.kind) {
         case ChipKind::EPSG: e->dev = std::make_shared<ay8930_device>(e->native_rate); break;
         case ChipKind::SSG:  e->dev = std::make_shared<ym2149_device>(e->native_rate); break;
@@ -246,8 +256,9 @@ static void forwardSequencerWrite(void* context, uint8_t reg, uint8_t val) {
 
 static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val) {
     if (c.amm) {
-        // SSGS3 は $10-$32 が SSG 部、それ以外が AMM 部のレジスタ
-        if (reg >= 0x10 && reg <= 0x32)
+        // SSGS3 は $10-$32 が SSG 部、それ以外が AMM 部のレジスタ。
+        // SSG を持たない AMMS-A はすべて AMM 部へ渡す
+        if (c.ssgs && reg >= 0x10 && reg <= 0x32)
             c.ssgs->write(reg, val);
         else
             c.amm->write(reg, val);
@@ -441,8 +452,8 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_Generate(
         {
             std::lock_guard<std::mutex> lock(engine->write_mutex);
             for (auto& chip : engine->chips) {
-                chipCalcStereo(*chip, l, r);
-                if (chip->amm) ammCalcStereo(*chip, l, r);
+                if (chip->ssgs || chip->dev) chipCalcStereo(*chip, l, r);
+                if (chip->amm)               ammCalcStereo(*chip, l, r);
             }
         }
         out_l[i] = std::max(-1.0f, std::min(1.0f, l));

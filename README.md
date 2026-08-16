@@ -1,7 +1,7 @@
 # EPSGemuEngine
 
 **FmEngineApi** 準拠の AY8930 (EPSG) / YMZ705 (SSGS) / YMZ732 (SSGS2) /
-YMZ771 (SSGS3) エミュレーションエンジン。
+YMZ771 (SSGS3) / YMZ770C (AMMS-A) エミュレーションエンジン。
 MAME 由来の ay8910 コア ([furnace](https://github.com/tildearrow/furnace) fork) を
 統合した共有ライブラリ (DLL / .so / .dylib) です。
 
@@ -12,7 +12,7 @@ MAME 由来の ay8910 コア ([furnace](https://github.com/tildearrow/furnace) f
 | `extern/ay8910` | [furnace](https://github.com/tildearrow/furnace) `platform/sound/ay8910` ← [MAME](https://github.com/mamedev/mame) `sound/ay8910` | AY8930 / YM2149 / AY-3-8910 / AY-3-8914 | `EPSG` / `SSG` / `PSG` / `PSG2` |
 | `extern/mpeg_audio` | [MAME](https://github.com/mamedev/mame) `sound/mpeg_audio` (無改変) | AMM デコーダ | `SSGS3` の一部 |
 | `src/YmzSsg.*` | 上記 ay8910 コアの `ym2149_device` を派生 | YMZ705 / YMZ732 / YMZ771 の SSG 部 | `SSGS` / `SSGS2` / `SSGS3` |
-| `src/Ymz770.*` | [MAME](https://github.com/mamedev/mame) `sound/ymz770` の `ymz770_device` を移植 | YMZ770 / YMZ771 の AMM 部 | `SSGS3` の一部 |
+| `src/Ymz770.*` | [MAME](https://github.com/mamedev/mame) `sound/ymz770` の `ymz770_device` を移植 | YMZ770C / YMZ771 の AMM 部 | `AMMS-A` / `SSGS3` の一部 |
 
 ## 対応チップ一覧
 
@@ -25,9 +25,21 @@ MAME 由来の ay8910 コア ([furnace](https://github.com/tildearrow/furnace) f
 | `SSGS`  | YMZ705    | 4.096 MHz  | 内部クロック / 8 (256,000 Hz) |
 | `SSGS2` | YMZ732    | 12.288 MHz | 内部クロック / 8 (256,000 Hz) |
 | `SSGS3` | YMZ771    | 16.384 MHz | 内部クロック / 8 (256,000 Hz) |
+| `AMMS-A` | YMZ770C  | 16.384 MHz | clock / 512 (32,000 Hz) |
 
 `SSGS3` は SSG 部に加えて AMM フレーズ再生部を持ちます。AMM 部は SSG 部とは
-別に fs (16 kHz / 32 kHz) で動作します。
+別のレートで動作するため、`SSGS3` のネイティブレートは SSG 部のものです。
+
+`AMMS-A` は YMZ770C 単体で、SSG を持たず AMM フレーズ再生部だけを持ちます。
+ネイティブレートはリセット直後の fs で、再生開始後は AMM データが指定する
+fs に切り替わります。YMZ770C のマスタークロックは使用する fs に応じて
+選びます。
+
+| fs | マスタークロック |
+|---|---|
+| 32 kHz / 16 kHz | 16.384 MHz |
+| 44.1 kHz / 22.05 kHz | 16.9344 MHz |
+| 48 kHz / 24 kHz | 18.432 MHz |
 
 クロックは `FmEngine_AddChip` の `clock` 引数で変更できます (0 でデフォルト)。
 
@@ -307,10 +319,11 @@ SSG 全体のトータルボリュームが加わります。
 `0x32` は 6 チャンネル合成後にかかる線形ボリュームで、128 が 100% です。
 リセット直後は 0 なので、発音させるには値を設定する必要があります。
 
-## AMM フレーズ再生 (SSGS3)
+## AMM フレーズ再生 (AMMS-A / SSGS3)
 
-YMZ771 のフレーズ再生・シーケンサ部は YMZ770 (AMMS) と互換で、AMM
-(AMusement Music compression) 形式のフレーズデータを外部 ROM から再生します。
+AMM (AMusement Music compression) 形式のフレーズデータを外部 ROM から
+再生します。YMZ771 のフレーズ再生・シーケンサ部は YMZ770C と互換なので、
+`AMMS-A` と `SSGS3` は同じ実装を使います。
 
 ### レジスタマップ
 
@@ -365,8 +378,8 @@ ROM 先頭には以下のテーブルが並びます。いずれも 1 エント�
 | `0x0F` | 終了。SQOF のチャンネルを停止し、SQLP が 1 なら先頭へ戻る |
 | その他 | そのレジスタへの書き込み |
 
-書き込みは CPU からの書き込みと同じ経路を通るため、シーケンスコードから
-SSG 部のレジスタ (`0x10`–`0x32`) も設定できます。
+書き込みは CPU からの書き込みと同じ経路を通るため、`SSGS3` ではシーケンス
+コードから SSG 部のレジスタ (`0x10`–`0x32`) も設定できます。
 
 ### 対象外の機能
 
@@ -395,8 +408,8 @@ SSG 部のレジスタ (`0x10`–`0x32`) も設定できます。
 
 `SSGS` / `SSGS2` は `reg` をアドレスデコーダとして扱い、`0x00`–`0x1F` を SSG-1、
 `0x20`–`0x3F` を SSG-2 に振り分けます。`SSGS3` は `0x10`–`0x32` を SSG 部へ、
-それ以外を AMM 部へ振り分けます。いずれもアドレスラッチによる非選択状態は
-生じません。
+それ以外を AMM 部へ振り分けます。`AMMS-A` は SSG を持たないためすべて
+AMM 部へ渡ります。いずれもアドレスラッチによる非選択状態は生じません。
 
 `port` は使用しません。
 
@@ -411,21 +424,23 @@ SSG 部のレジスタ (`0x10`–`0x32`) も設定できます。
 6 チャンネル同時では 0.75 です (`SSGS3` は VLMA_SSG = 128 のとき)。
 この音量は同じチップを扱う他エンジン (DSAemuEngine の `SSG`) と揃えてあります。
 
+`AMMS-A` は SSG を持たないため、出力は AMM 部だけです。
+
 チップ出力は片極性 (無音側が負電位相当) のため、無音時のレベルを差し引いて
 出力の DC を除去しています。`SSGS` 系はパンポットに直流成分が漏れないよう、
 チャンネル単位で差し引きます。発音中に残る直流成分は実チップと同じ挙動です。
 
 ネイティブレートからエンジンのサンプルレートへの変換は区間平均で行います。
 
-`SSGS3` の AMM 部はネイティブレートより大幅に低い fs (16 kHz / 32 kHz) で
-動作し、しかも fs は再生中に AMM のフレームヘッダで変わり得ます。このため
-AMM 部だけは区間平均ではなく線形補間でサンプルレートへ変換します。
-AMM 出力は 16bit フルスケールを 1.0 とします。
+AMM 部は fs が再生中に AMM のフレームヘッダで変わり得るため、区間平均では
+なく線形補間でサンプルレートへ変換します。AMM 出力は 16bit フルスケールを
+1.0 とします。
 
 ### 外部メモリ
 
-`SSGS3` は `FM_MEM_AMM` でフレーズデータ ROM を受け取ります。それ以外の
-チップと種別では `FmEngine_SetMemory` は `FM_ERR_UNAVAILABLE` を返します。
+`AMMS-A` / `SSGS3` は `FM_MEM_AMM` でフレーズデータ ROM を受け取ります。
+それ以外のチップと種別では `FmEngine_SetMemory` は `FM_ERR_UNAVAILABLE` を
+返します。
 
 ROM を差し替えると AMM 部はリセットされます (SSG 部は影響を受けません)。
 
