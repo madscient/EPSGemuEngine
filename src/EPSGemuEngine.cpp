@@ -41,6 +41,9 @@ static constexpr uint32_t kAmmDivider = 512;
 // レジスタ変更を遅らせないよう、まとめずに 1 サンプルずつ生成する
 static constexpr uint32_t kPcmVoiceBufs = 16;
 
+// YMZ280B の外部メモリのアドレス空間 (24bit)
+static constexpr uint32_t kPcmMemSpace = 1u << 24;
+
 // =========================================================
 //  チップ種別列挙
 // =========================================================
@@ -142,10 +145,13 @@ struct ChipEntry {
     // PCMD8 のコアが 8 ボイスの L/R を書き出す先
     int16_t pcm_voice_out[kPcmVoiceBufs] = {};
 
-    // FM_MEM_PCM の外部メモリ (寿命は呼び出し元が管理する)。
+    // FM_MEM_PCM で渡された大きさ。
     // AMM 部 / ADPCM 部 / PCMD8 を 2 つ以上持つチップは無いので 1 つで足りる
-    const uint8_t* mem      = nullptr;
-    uint32_t       mem_size = 0;
+    uint32_t mem_size = 0;
+
+    // PCMD8 のコアに渡す外部メモリ。コアはアドレスの範囲検査をせず、0x87 で
+    // 書き込みもするので、渡されたデータ (const) ではなくアドレス空間全体の複製を渡す
+    std::unique_ptr<uint8_t[]> pcm_mem;
 
     float gain_l = 1.0f;
     float gain_r = 1.0f;
@@ -328,8 +334,8 @@ static void forwardSequencerWrite(void* context, uint8_t reg, uint8_t val) {
 
 static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val) {
     if (c.pcm) {
-        // コアは外部メモリの範囲検査をしないため、ROM 未設定なら触らない
-        if (!c.mem) return;
+        // 外部メモリが未設定の間、コアは null ポインタを添字にするため触らない
+        if (!c.pcm_mem) return;
         c.pcm->write(0, reg);
         c.pcm->write(1, val);
         return;
@@ -411,7 +417,7 @@ static void adpcmCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
 // =========================================================
 static void pcmCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
     interpCalc(c.pcm_interp, [&c](float& l, float& r) {
-        if (!c.mem) { l = 0.0f; r = 0.0f; return; }
+        if (!c.pcm_mem) { l = 0.0f; r = 0.0f; return; }
 
         int16_t* ptrs[kPcmVoiceBufs];
         for (uint32_t i = 0; i < kPcmVoiceBufs; ++i)
@@ -556,7 +562,6 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
     std::lock_guard<std::mutex> lock(engine->write_mutex);
 
     if (mem_type == FM_MEM_PCM && c.amm) {
-        c.mem      = rom;
         c.mem_size = bytes;
         c.amm->set_rom(rom, bytes);
         // ROM 差し替えでレジスタもリセットされるため再生レートを取り直す
@@ -566,17 +571,25 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
     }
 
     if (mem_type == FM_MEM_PCM && c.adpcm) {
-        c.mem      = rom;
         c.mem_size = bytes;
         c.adpcm->set_rom(rom, bytes);
         return FM_OK;
     }
 
     if (mem_type == FM_MEM_PCM && c.pcm) {
-        c.mem      = rom;
+        if (rom) {
+            if (!c.pcm_mem) {
+                c.pcm_mem.reset(new(std::nothrow) uint8_t[kPcmMemSpace]);
+                if (!c.pcm_mem) return FM_ERR_ALLOC;
+            }
+            const uint32_t n = std::min(bytes, kPcmMemSpace);
+            memcpy(c.pcm_mem.get(), rom, n);
+            memset(c.pcm_mem.get() + n, 0, kPcmMemSpace - n);
+        } else {
+            c.pcm_mem.reset();
+        }
         c.mem_size = bytes;
-        // コアは読み書きとも生のポインタを添字で参照する
-        c.pcm->device_start(const_cast<uint8_t*>(rom));
+        c.pcm->device_start(c.pcm_mem.get());
         c.pcm->device_reset();
         return FM_OK;
     }
