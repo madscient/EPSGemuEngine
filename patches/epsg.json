@@ -7,6 +7,7 @@
   "chips": {
     "EPSG": {
       "_comment": "AY8930 3ch. clock=2MHz. 互換モード f=clk/(16*TP), 拡張モード f=clk/(8*TP)",
+      "clock": 2000000,
       "init": [
         { "reg": "0x07", "val": "0x3F" },
         { "reg": "0x08", "val": "0x00" },

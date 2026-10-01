@@ -7,6 +7,7 @@
   "chips": {
     "SSGS": {
       "_comment": "YMZ705 SSG 2 系統 + パンポット。clock=4.096MHz → 内部 2.048MHz, f=clk/(16*TP)",
+      "clock": 4096000,
       "init": [
         { "reg": "0x07", "val": "0x3F" },
         { "reg": "0x08", "val": "0x00" },

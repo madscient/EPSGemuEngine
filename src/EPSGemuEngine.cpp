@@ -178,19 +178,18 @@ struct FmEngineOpaque {
 struct ChipDesc {
     const char* name;
     ChipKind    kind;
-    uint32_t    default_clock;
 };
 
 static const ChipDesc kChipTable[] = {
-    { "EPSG", ChipKind::EPSG, 2000000 },  // AY8930
-    { "SSG",  ChipKind::SSG,  2000000 },  // YM2149
-    { "PSG",  ChipKind::PSG,  2000000 },  // AY-3-8910
-    { "PSG2", ChipKind::PSG2, 2000000 },  // AY-3-8914
-    { "SSGS",  ChipKind::SSGS,   4096000 },  // YMZ705
-    { "SSGS2", ChipKind::SSGS2, 12288000 },  // YMZ732
-    { "SSGS3", ChipKind::SSGS3, 16384000 },  // YMZ771
-    { "AMMS-A", ChipKind::AMMSA, 16384000 }, // YMZ770C
-    { "PCMD8", ChipKind::PCMD8, 16934400 },  // YMZ280B
+    { "EPSG",   ChipKind::EPSG  },  // AY8930
+    { "SSG",    ChipKind::SSG   },  // YM2149
+    { "PSG",    ChipKind::PSG   },  // AY-3-8910
+    { "PSG2",   ChipKind::PSG2  },  // AY-3-8914
+    { "SSGS",   ChipKind::SSGS  },  // YMZ705
+    { "SSGS2",  ChipKind::SSGS2 },  // YMZ732
+    { "SSGS3",  ChipKind::SSGS3 },  // YMZ771
+    { "AMMS-A", ChipKind::AMMSA },  // YMZ770C
+    { "PCMD8",  ChipKind::PCMD8 },  // YMZ280B
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
 
@@ -272,7 +271,7 @@ static std::unique_ptr<ChipEntry> createChip(
     e->kind        = desc.kind;
     e->name        = desc.name;
     e->sample_rate = sample_rate;
-    e->clock       = (clock != 0) ? clock : desc.default_clock;
+    e->clock       = clock;
     e->native_rate = nativeRate(desc.kind, e->clock);
     if (e->native_rate == 0) return nullptr;
 
@@ -551,7 +550,8 @@ FMENGINE_API const char* FMENGINE_CALL FmEngine_GetSupportedChip(
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_AddChip(
     FmEngineHandle engine, const char* name, uint32_t clock, uint32_t* out_id)
 {
-    if (!engine || !name) return FM_ERR_INVALID_ARG;
+    // エンジンは既定のクロックを持たないので、0 を標準値に読み替えない
+    if (!engine || !name || clock == 0) return FM_ERR_INVALID_ARG;
     const ChipDesc* desc = findChipDesc(name);
     if (!desc) return FM_ERR_UNKNOWN_CHIP;
 

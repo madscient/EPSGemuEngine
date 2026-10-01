@@ -7,6 +7,7 @@
   "chips": {
     "SSGS3": {
       "_comment": "YMZ771 SSG 2 系統。clock=16.384MHz → 内部 2.048MHz, f=clk/(16*TP)。$32 の SSG トータルボリュームは 128 で 100%",
+      "clock": 16384000,
       "init": [
         { "reg": "0x32", "val": "0x80" },
         { "reg": "0x1E", "val": "0x3F" },

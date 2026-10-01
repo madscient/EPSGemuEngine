@@ -7,6 +7,7 @@
   "chips": {
     "PSG2": {
       "_comment": "AY-3-8914 3ch. clock=2MHz, f=clk/(16*TP). レジスタ配置は AY-3-8910 と異なる",
+      "clock": 2000000,
       "init": [
         { "reg": "0x08", "val": "0x3F" },
         { "reg": "0x0B", "val": "0x00" },
