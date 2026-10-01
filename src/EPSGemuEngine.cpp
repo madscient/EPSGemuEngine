@@ -142,11 +142,10 @@ struct ChipEntry {
     // PCMD8 のコアが 8 ボイスの L/R を書き出す先
     int16_t pcm_voice_out[kPcmVoiceBufs] = {};
 
-    // 外部メモリ (寿命は呼び出し元が管理する)
-    const uint8_t* amm_rom       = nullptr;
-    uint32_t       amm_rom_size  = 0;
-    const uint8_t* samp_rom      = nullptr;
-    uint32_t       samp_rom_size = 0;
+    // FM_MEM_PCM の外部メモリ (寿命は呼び出し元が管理する)。
+    // AMM 部 / ADPCM 部 / PCMD8 を 2 つ以上持つチップは無いので 1 つで足りる
+    const uint8_t* mem      = nullptr;
+    uint32_t       mem_size = 0;
 
     float gain_l = 1.0f;
     float gain_r = 1.0f;
@@ -330,7 +329,7 @@ static void forwardSequencerWrite(void* context, uint8_t reg, uint8_t val) {
 static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val) {
     if (c.pcm) {
         // コアは外部メモリの範囲検査をしないため、ROM 未設定なら触らない
-        if (!c.samp_rom) return;
+        if (!c.mem) return;
         c.pcm->write(0, reg);
         c.pcm->write(1, val);
         return;
@@ -412,7 +411,7 @@ static void adpcmCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
 // =========================================================
 static void pcmCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
     interpCalc(c.pcm_interp, [&c](float& l, float& r) {
-        if (!c.samp_rom) { l = 0.0f; r = 0.0f; return; }
+        if (!c.mem) { l = 0.0f; r = 0.0f; return; }
 
         int16_t* ptrs[kPcmVoiceBufs];
         for (uint32_t i = 0; i < kPcmVoiceBufs; ++i)
@@ -520,6 +519,30 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetGain(
     return FM_OK;
 }
 
+// 部位は仕様書の部位の表に載るチップだけが持つ。本エンジンのチップは
+// 載っていないので、どのチップも部位を持たない
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetPartGain(
+    FmEngineHandle /*engine*/, uint32_t /*chip_id*/, FmPart /*part*/,
+    float /*gain_l*/, float /*gain_r*/)
+{
+    return FM_ERR_INVALID_ARG;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetPartGain(
+    FmEngineHandle /*engine*/, uint32_t /*chip_id*/, FmPart /*part*/,
+    float* /*out_gain_l*/, float* /*out_gain_r*/)
+{
+    return FM_ERR_INVALID_ARG;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetPartMask(
+    FmEngineHandle engine, uint32_t chip_id, uint32_t* out_mask)
+{
+    if (!engine || chip_id >= engine->chips.size() || !out_mask) return FM_ERR_INVALID_ARG;
+    *out_mask = 0;
+    return FM_OK;
+}
+
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
     FmEngineHandle engine, uint32_t chip_id,
     FmMemoryType mem_type, const uint8_t* data, uint32_t size)
@@ -532,9 +555,9 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
 
     std::lock_guard<std::mutex> lock(engine->write_mutex);
 
-    if (mem_type == FM_MEM_AMM && c.amm) {
-        c.amm_rom      = rom;
-        c.amm_rom_size = bytes;
+    if (mem_type == FM_MEM_PCM && c.amm) {
+        c.mem      = rom;
+        c.mem_size = bytes;
         c.amm->set_rom(rom, bytes);
         // ROM 差し替えでレジスタもリセットされるため再生レートを取り直す
         c.amm_rate = c.amm->sample_rate();
@@ -543,15 +566,15 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
     }
 
     if (mem_type == FM_MEM_PCM && c.adpcm) {
-        c.samp_rom      = rom;
-        c.samp_rom_size = bytes;
+        c.mem      = rom;
+        c.mem_size = bytes;
         c.adpcm->set_rom(rom, bytes);
         return FM_OK;
     }
 
     if (mem_type == FM_MEM_PCM && c.pcm) {
-        c.samp_rom      = rom;
-        c.samp_rom_size = bytes;
+        c.mem      = rom;
+        c.mem_size = bytes;
         // コアは読み書きとも生のポインタを添字で参照する
         c.pcm->device_start(const_cast<uint8_t*>(rom));
         c.pcm->device_reset();
@@ -565,10 +588,8 @@ FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetMemorySize(
     FmEngineHandle engine, uint32_t chip_id, FmMemoryType mem_type)
 {
     if (!engine || chip_id >= engine->chips.size()) return 0;
-    const ChipEntry& c = *engine->chips[chip_id];
-    if (mem_type == FM_MEM_AMM) return c.amm_rom_size;
-    if (mem_type == FM_MEM_PCM) return c.samp_rom_size;
-    return 0;
+    if (mem_type != FM_MEM_PCM) return 0;
+    return engine->chips[chip_id]->mem_size;
 }
 
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_Generate(

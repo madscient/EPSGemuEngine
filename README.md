@@ -89,7 +89,7 @@ EPSGemuEngine/
 │   ├── ssgs.json
 │   └── ssgs3.json
 └── src/
-    ├── FmEngineApi.h         ← API ヘッダ (FMEngineTest と共通)
+    ├── FmEngineApi.h         ← API ヘッダ (FmEngineApi 共通)
     ├── YmzSsg.h              ← YMZ 系 SSG 部 (ym2149_device の派生)
     ├── YmzSsg.cpp
     ├── Ymz770.h              ← AMM フレーズ再生・シーケンサ部
@@ -410,11 +410,11 @@ AMM (AMusement Music compression) 形式のフレーズデータを外部 ROM �
 
 ### フレーズデータ ROM
 
-`FmEngine_SetMemory` に `FM_MEM_AMM` を指定して渡します。データの寿命は
+`FmEngine_SetMemory` に `FM_MEM_PCM` を指定して渡します。データの寿命は
 呼び出し元が管理します。
 
 ```c
-FmEngine_SetMemory(engine, chip_id, FM_MEM_AMM, rom_data, rom_size);
+FmEngine_SetMemory(engine, chip_id, FM_MEM_PCM, rom_data, rom_size);
 ```
 
 ROM 先頭には以下のテーブルが並びます。いずれも 1 エントリ 4 バイトで、
@@ -560,17 +560,33 @@ AMM 部 / ADPCM 部 / `PCMD8` は SSG よりはるかに低いレートで動き
 fs が再生中に変わりもするため、区間平均ではなく線形補間でサンプルレートへ
 変換します。
 
+### 部位ごとのゲイン
+
+FmEngineApi の任意エクスポート `FmEngine_SetPartGain` / `FmEngine_GetPartGain` /
+`FmEngine_GetPartMask` をエクスポートしていますが、どのチップも部位を持ちません。
+SSG 部と ADPCM 部 / AMM 部を持つチップも、部位には分けていません。
+
+| 関数 | 戻り値 |
+|---|---|
+| `FmEngine_GetPartMask` | `FM_OK` (マスクは 0) |
+| `FmEngine_SetPartGain` / `FmEngine_GetPartGain` | `FM_ERR_INVALID_ARG` |
+
+音量は `FmEngine_SetGain` で設定します。
+
 ### 外部メモリ
 
-| チップ | 種別 | 内容 |
-|---|---|---|
-| `AMMS-A` / `SSGS3` | `FM_MEM_AMM` | AMM フレーズデータ ROM |
-| `SSGS` / `SSGS2` | `FM_MEM_PCM` | ADPCM ボイスデータ ROM |
-| `PCMD8` | `FM_MEM_PCM` | 音声データ用外部メモリ |
+外部メモリはいずれも `FmEngine_SetMemory` に `FM_MEM_PCM` を指定して渡します。
 
-上記以外の組み合わせでは `FmEngine_SetMemory` は `FM_ERR_UNAVAILABLE` を
-返します。ROM を差し替えると該当部はリセットされます (SSG 部は影響を
-受けません)。
+| チップ | 内容 |
+|---|---|
+| `AMMS-A` / `SSGS3` | AMM フレーズデータ ROM |
+| `SSGS` / `SSGS2` | ADPCM ボイスデータ ROM |
+| `PCMD8` | 音声データ用外部メモリ |
+
+上記以外のチップや `FM_MEM_PCM` 以外の種別では、`FmEngine_SetMemory` は
+`FM_ERR_UNAVAILABLE` を返します。ROM を差し替えると該当部はリセットされます
+(SSG 部は影響を受けません)。外部メモリの割り当て (`FmEngine_SetMemoryEx`) には
+対応していません。
 
 `PCMD8` のコアは外部メモリアクセスに範囲検査を持たず、レジスタに設定された
 アドレスをそのまま添字にします。プログラムが使うアドレス範囲を覆うだけの
