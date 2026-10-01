@@ -8,6 +8,8 @@
 
 #include <cstdint>
 
+class MemMap;
+
 class ymz_adpcm_device
 {
 public:
@@ -20,8 +22,8 @@ public:
 
     void reset();
 
-    // ボイスデータ用 ROM を差し替える。data の寿命は呼び出し元が管理する
-    void set_rom(const uint8_t* data, uint32_t size);
+    // ボイスデータを読む外部メモリを差し替え、リセットする。mem の寿命は呼び出し元が管理する
+    void set_memory(const MemMap* mem);
 
     // reg : $40-$B3 (チャンネル n の先頭は $40 + n*0x10)
     void write(uint8_t reg, uint8_t val);
@@ -63,7 +65,6 @@ private:
     void     update_gain(voice& v);
     int16_t  next_nibble(voice& v);
 
-    const uint8_t* m_rom;
-    uint32_t       m_rom_size;
-    voice          m_voice[NUM_CHANNELS];
+    const MemMap* m_mem;
+    voice         m_voice[NUM_CHANNELS];
 };

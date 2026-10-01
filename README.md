@@ -12,7 +12,7 @@ MAME 由来の ay8910 コア ([furnace](https://github.com/tildearrow/furnace) f
 | `extern/ay8910` | [furnace](https://github.com/tildearrow/furnace) `platform/sound/ay8910` ← [MAME](https://github.com/mamedev/mame) `sound/ay8910` | AY8930 / YM2149 / AY-3-8910 / AY-3-8914 | `EPSG` / `SSG` / `PSG` / `PSG2` |
 | `extern/mpeg_audio` | [MAME](https://github.com/mamedev/mame) `sound/mpeg_audio` (無改変) | AMM デコーダ | `SSGS3` の一部 |
 | `src/YmzSsg.*` | 上記 ay8910 コアの `ym2149_device` を派生 | YMZ705 / YMZ732 / YMZ771 の SSG 部 | `SSGS` / `SSGS2` / `SSGS3` |
-| `extern/ymz280b` | [furnace](https://github.com/tildearrow/furnace) `platform/sound/ymz280b` ← [MAME](https://github.com/mamedev/mame) `sound/ymz280b` | YMZ280B | `PCMD8` |
+| `src/Ymz280b.*` | `extern/ymz280b` ([furnace](https://github.com/tildearrow/furnace) `platform/sound/ymz280b` ← [MAME](https://github.com/mamedev/mame) `sound/ymz280b`) のフォーク。外部メモリを関数経由で読み書きする | YMZ280B | `PCMD8` |
 | `src/Ymz770.*` | [MAME](https://github.com/mamedev/mame) `sound/ymz770` の `ymz770_device` を移植 | YMZ770C / YMZ771 の AMM 部 | `AMMS-A` / `SSGS3` の一部 |
 | `src/YmzAdpcm.*` | 上記 ymz280b コアの 4bit ADPCM コーデックを流用 | YMZ705 / YMZ732 の ADPCM 部 | `SSGS` / `SSGS2` の一部 |
 
@@ -79,7 +79,7 @@ EPSGemuEngine/
 │   │   ├── mpeg_audio.cpp
 │   │   ├── emu.h             ← MAME フレームワークヘッダのシム
 │   │   └── README.md
-│   └── ymz280b/              ← フォークしたコア (無改変)
+│   └── ymz280b/              ← src/Ymz280b.* のフォーク元 (無改変、ビルドには使わない)
 │       ├── ymz280b.h
 │       ├── ymz280b.cpp
 │       └── README.md
@@ -96,6 +96,9 @@ EPSGemuEngine/
     ├── Ymz770.cpp
     ├── YmzAdpcm.h            ← YMZ705 系の ADPCM 再生部
     ├── YmzAdpcm.cpp
+    ├── Ymz280b.h             ← YMZ280B (extern/ymz280b のフォーク)
+    ├── Ymz280b.cpp
+    ├── MemMap.h              ← 外部メモリの割り当て
     └── EPSGemuEngine.cpp     ← エンジン実装
 ```
 
@@ -289,8 +292,8 @@ SSG ブロックの動作クロックを clk (既定 2.048 MHz) として、
 ## ADPCM 再生 (SSGS / SSGS2)
 
 YMZ705 / YMZ732 は 4bit ADPCM を 8 チャンネル同時に再生できます。
-ボイスデータは外部 ROM に置き、`FmEngine_SetMemory` に `FM_MEM_PCM` を
-指定して渡します。
+ボイスデータは外部 ROM に置き、`FmEngine_SetMemory` (または
+`FmEngine_SetMemoryEx`) に `FM_MEM_PCM` を指定して渡します。
 
 ### レジスタマップ
 
@@ -410,8 +413,8 @@ AMM (AMusement Music compression) 形式のフレーズデータを外部 ROM �
 
 ### フレーズデータ ROM
 
-`FmEngine_SetMemory` に `FM_MEM_PCM` を指定して渡します。データの寿命は
-呼び出し元が管理します。
+`FmEngine_SetMemory` (または `FmEngine_SetMemoryEx`) に `FM_MEM_PCM` を
+指定して渡します。データの寿命は呼び出し元が管理します。
 
 ```c
 FmEngine_SetMemory(engine, chip_id, FM_MEM_PCM, rom_data, rom_size);
@@ -460,8 +463,10 @@ ROM 先頭には以下のテーブルが並びます。いずれも 1 エント�
 ## レジスタマップ (PCMD8)
 
 YMZ280B は 4bit ADPCM / 8bit PCM / 16bit PCM を 8 チャンネル同時に
-再生できます。音声データは外部メモリに置き、`FmEngine_SetMemory` に
-`FM_MEM_PCM` を指定して渡します。
+再生できます。音声データは外部メモリに置き、`FmEngine_SetMemory` または
+`FmEngine_SetMemoryEx` に `FM_MEM_PCM` を指定して渡します。チップが書き込んだ
+内容をアプリケーションで受け取るには、`FmEngine_SetMemoryEx` で RAM の
+ブロックを割り当てます (「外部メモリ」の節を参照)。
 
 ### ファンクションレジスタ
 
@@ -501,9 +506,8 @@ FN は 9bit、4bit ADPCM では下位 8bit だけが使われます。
 `0xFF` の KENB を 1 にしないとキーオンが効きません。
 
 外部メモリのアドレスは `0x84`–`0x86` に絶対アドレスを 3 バイトで設定し、
-`0x87` で読み書きします。書き込んだ値は、その後チップから読み出せます
-(SRAM を接続したときと同じ挙動)。`FmEngine_SetMemory` で渡したデータは
-書き換えません (後述)。
+`0x87` で読み書きします。書き込みがどこに入るかは外部メモリの割り当てに
+よります (後述)。
 
 ### 対象外の機能
 
@@ -576,25 +580,49 @@ SSG 部と ADPCM 部 / AMM 部を持つチップも、部位には分けてい�
 
 ### 外部メモリ
 
-外部メモリはいずれも `FmEngine_SetMemory` に `FM_MEM_PCM` を指定して渡します。
+外部メモリの種別はいずれも `FM_MEM_PCM` です。`FmEngine_SetMemory` と
+`FmEngine_SetMemoryEx` の両方に対応しています。
 
-| チップ | 内容 |
-|---|---|
-| `AMMS-A` / `SSGS3` | AMM フレーズデータ ROM |
-| `SSGS` / `SSGS2` | ADPCM ボイスデータ ROM |
-| `PCMD8` | 音声データ用外部メモリ |
+| チップ | 内容 | チップからの書き込み |
+|---|---|---|
+| `AMMS-A` / `SSGS3` | AMM フレーズデータ ROM | なし |
+| `SSGS` / `SSGS2` | ADPCM ボイスデータ ROM | なし |
+| `PCMD8` | 音声データ用外部メモリ | `0x87` |
 
 上記以外のチップや `FM_MEM_PCM` 以外の種別では、`FmEngine_SetMemory` は
-`FM_ERR_UNAVAILABLE` を返します。ROM を差し替えると該当部はリセットされます
-(SSG 部は影響を受けません)。外部メモリの割り当て (`FmEngine_SetMemoryEx`) には
-対応していません。
+`FM_ERR_UNAVAILABLE`、`FmEngine_SetMemoryEx` は `FM_ERR_INVALID_ARG` を返します。
 
-`PCMD8` は、渡されたデータをアドレス空間全体 (24bit、16MB) の複製に写して
-使います。データの範囲外のアドレスは 0 として読み、16MB を超える部分は
-使いません。チップの書き込みは複製に入り、渡したデータは書き換えません。
-外部メモリが未設定の間はレジスタ書き込みが無視され、出力は無音になります。
+割り当ての無い番地を読むと 0 で、書き込みは捨てます。割り当てを変えると
+該当部はリセットされます (SSG 部は影響を受けません)。`FmEngine_GetMemorySize` は
+割り当てたブロックの大きさの合計を返します。
 
-`SSGS` / `SSGS2` の ADPCM 部は範囲外のアドレスを 0 として読みます。
+#### `FmEngine_SetMemory`
+
+それまでの割り当てを外し、`[0, size)` に `data` を割り当てます。渡したデータを
+エンジンが書き換えることはありません。
+
+- `AMMS-A` / `SSGS3` / `SSGS` / `SSGS2`: データを複製せずに読みます
+- `PCMD8`: データを複製し、チップの書き込みは複製に入ります。書き込んだ値は、
+  その後チップから読み出せます
+
+#### `FmEngine_SetMemoryEx`
+
+`[base, base + size)` に `data` を割り当てます。`FM_ACCESS_ROM` のブロックへの
+チップの書き込みは捨て、`FM_ACCESS_RAM` のブロックはその場で読み書きします。
+
+- `PCMD8`: 24bit (16MB) の 1 つのアドレス空間に、ROM と RAM を並べて割り当て
+  られます。`0x87` の書き込みは、RAM のブロックに入ります
+- `SSGS` / `SSGS2`: ブロックの並べ方に制限はありません
+- `AMMS-A` / `SSGS3`: ROM のブロックは自由に並べられます (エンジンが 1 本の
+  連続した複製にまとめます)。RAM は、`base` が 0 で、16MB 未満の範囲に他の
+  ブロックが無いときだけ割り当てられます。それ以外の RAM を含む割り当ては
+  `FM_ERR_UNAVAILABLE` になり、割り当ては変わりません。16MB を超える番地は
+  読みません
+
+#### 未設定のとき
+
+`PCMD8` は、外部メモリが何も割り当てられていない間はレジスタ書き込みが無視され、
+出力は無音になります。
 
 ## テストパッチ
 
@@ -616,6 +644,7 @@ SSG 部と ADPCM 部 / AMM 部を持つチップも、部位には分けてい�
 | `extern/ay8910` (MAME / furnace 由来のコア) | **BSD-3-Clause** — [extern/ay8910/LICENSE](extern/ay8910/LICENSE) |
 | `extern/mpeg_audio` (MAME 由来の AMM デコーダ) | **BSD-3-Clause** — [extern/mpeg_audio/LICENSE](extern/mpeg_audio/LICENSE) |
 | `extern/ymz280b` (MAME / furnace 由来のコア) | **BSD-3-Clause** — [extern/ymz280b/LICENSE](extern/ymz280b/LICENSE) |
+| `src/Ymz280b.*` (上記コアのフォーク) | **BSD-3-Clause** — [extern/ymz280b/LICENSE](extern/ymz280b/LICENSE) |
 | `src/Ymz770.*` (MAME 由来の AMM 再生部の移植) | **BSD-3-Clause** |
 | `src/YmzAdpcm.*` (MAME 由来の ADPCM コーデックを流用) | **BSD-3-Clause** |
 

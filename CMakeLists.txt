@@ -13,8 +13,6 @@ set(CORE_SOURCES
     extern/ay8910/ay8910.cpp
     # mpeg_audio  AMM デコーダ → SSGS3 / AMMS-A
     extern/mpeg_audio/mpeg_audio.cpp
-    # ymz280b  YMZ280B → PCMD8
-    extern/ymz280b/ymz280b.cpp
 )
 
 set(ENGINE_SOURCES
@@ -22,6 +20,8 @@ set(ENGINE_SOURCES
     src/YmzSsg.cpp
     src/Ymz770.cpp
     src/YmzAdpcm.cpp
+    # extern/ymz280b のフォーク  YMZ280B → PCMD8
+    src/Ymz280b.cpp
 )
 
 # =======================================================
@@ -35,7 +35,6 @@ target_include_directories(EPSGemuEngine PRIVATE
     src                     # FmEngineApi.h
     extern/ay8910
     extern/mpeg_audio
-    extern/ymz280b
 )
 
 target_compile_definitions(EPSGemuEngine PRIVATE FMENGINE_EXPORTS)

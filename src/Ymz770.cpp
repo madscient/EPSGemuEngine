@@ -94,8 +94,8 @@ void ymz770_amm_device::reset()
 
 uint8_t ymz770_amm_device::rom_byte(uint32_t offset) const
 {
-    if (!m_rom) return 0;
-    return m_rom[offset % m_rom_size];
+    if (!m_rom || offset >= m_rom_size) return 0;
+    return m_rom[offset];
 }
 
 uint32_t ymz770_amm_device::phrase_offset(int phrase) const

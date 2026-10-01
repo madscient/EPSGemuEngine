@@ -9,21 +9,23 @@
 //     → SSGS3 (YMZ771) の AMM フレーズ再生・シーケンサ部
 //   YmzAdpcm (YMZ280B のコーデックを流用)
 //     → SSGS (YMZ705) / SSGS2 (YMZ732) の ADPCM 再生部
-//   ymz280b (MAME 由来 / furnace fork)
+//   Ymz280b (MAME 由来 / furnace fork の ymz280b をフォーク)
 //     → PCMD8 (YMZ280B)
 
 #include "FmEngineApi.h"
+#include "MemMap.h"
 #include "YmzSsg.h"
 #include "Ymz770.h"
 #include "YmzAdpcm.h"
+#include "Ymz280b.h"
 #include "../extern/ay8910/ay8910.h"
-#include "../extern/ymz280b/ymz280b.h"
 
 #include <cstring>
 #include <string>
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <algorithm>
 
 // =========================================================
@@ -41,8 +43,9 @@ static constexpr uint32_t kAmmDivider = 512;
 // レジスタ変更を遅らせないよう、まとめずに 1 サンプルずつ生成する
 static constexpr uint32_t kPcmVoiceBufs = 16;
 
-// YMZ280B の外部メモリのアドレス空間 (24bit)
-static constexpr uint32_t kPcmMemSpace = 1u << 24;
+// AMM のフレーズテーブルが指せるアドレス空間 (24bit)。
+// デコーダは読み出し上限をビット数の int で持つので、これより大きく渡さない
+static constexpr uint32_t kAmmMemSpace = 1u << 24;
 
 // =========================================================
 //  チップ種別列挙
@@ -145,13 +148,16 @@ struct ChipEntry {
     // PCMD8 のコアが 8 ボイスの L/R を書き出す先
     int16_t pcm_voice_out[kPcmVoiceBufs] = {};
 
-    // FM_MEM_PCM で渡された大きさ。
+    // FM_MEM_PCM の外部メモリの割り当て。
     // AMM 部 / ADPCM 部 / PCMD8 を 2 つ以上持つチップは無いので 1 つで足りる
-    uint32_t mem_size = 0;
+    MemMap mem;
 
-    // PCMD8 のコアに渡す外部メモリ。コアはアドレスの範囲検査をせず、0x87 で
-    // 書き込みもするので、渡されたデータ (const) ではなくアドレス空間全体の複製を渡す
-    std::unique_ptr<uint8_t[]> pcm_mem;
+    // PCMD8 の FmEngine_SetMemory で渡されたデータの複製。データは const だが、
+    // チップは 0x87 で外部メモリに書き込むため、書き込める複製を割り当てる
+    std::vector<uint8_t> mem_copy;
+
+    // AMM のデコーダに渡す、割り当てを 1 本につないだ ROM の複製
+    std::vector<uint8_t> amm_flat;
 
     float gain_l = 1.0f;
     float gain_r = 1.0f;
@@ -248,6 +254,14 @@ static void chipStep(ChipEntry& c, float& out_l, float& out_r) {
 
 static void forwardSequencerWrite(void* context, uint8_t reg, uint8_t val);
 
+// PCMD8 のコアが外部メモリを読み書きする先 (context は ChipEntry::mem)
+static uint8_t pcmMemRead(void* context, uint32_t address) {
+    return static_cast<const MemMap*>(context)->read(address);
+}
+static void pcmMemWrite(void* context, uint32_t address, uint8_t data) {
+    static_cast<const MemMap*>(context)->write(address, data);
+}
+
 // =========================================================
 //  チップ生成
 // =========================================================
@@ -275,12 +289,15 @@ static std::unique_ptr<ChipEntry> createChip(
     if (hasAdpcm(desc.kind)) {
         e->adpcm = std::make_unique<ymz_adpcm_device>();
         if (!e->adpcm) return nullptr;
+        e->adpcm->set_memory(&e->mem);
         e->adpcm_interp.set_rate(ymz_adpcm_device::kSampleRate, sample_rate);
     }
 
     if (desc.kind == ChipKind::PCMD8) {
         e->pcm = std::make_unique<ymz280b_device>();
         if (!e->pcm) return nullptr;
+        e->pcm->device_start(pcmMemRead, pcmMemWrite, &e->mem);
+        e->pcm->device_reset();
         e->pcm_interp.set_rate(e->native_rate, sample_rate);
     }
 
@@ -334,8 +351,9 @@ static void forwardSequencerWrite(void* context, uint8_t reg, uint8_t val) {
 
 static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val) {
     if (c.pcm) {
-        // 外部メモリが未設定の間、コアは null ポインタを添字にするため触らない
-        if (!c.pcm_mem) return;
+        // 割り当ての無い番地は 0 として読めるが、0 が続く 4bit ADPCM は
+        // 無音にならないため、外部メモリが未設定の間はチップを動かさない
+        if (c.mem.empty()) return;
         c.pcm->write(0, reg);
         c.pcm->write(1, val);
         return;
@@ -417,7 +435,7 @@ static void adpcmCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
 // =========================================================
 static void pcmCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
     interpCalc(c.pcm_interp, [&c](float& l, float& r) {
-        if (!c.pcm_mem) { l = 0.0f; r = 0.0f; return; }
+        if (c.mem.empty()) { l = 0.0f; r = 0.0f; return; }
 
         int16_t* ptrs[kPcmVoiceBufs];
         for (uint32_t i = 0; i < kPcmVoiceBufs; ++i)
@@ -432,6 +450,74 @@ static void pcmCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
         l = (float)acc_l / 32768.0f;
         r = (float)acc_r / 32768.0f;
     }, c.gain_l, c.gain_r, out_l, out_r);
+}
+
+// =========================================================
+//  外部メモリの割り当て
+// =========================================================
+// FM_MEM_PCM の外部メモリを持つチップか
+static bool hasExtMemory(const ChipEntry& c) {
+    return c.amm || c.adpcm || c.pcm;
+}
+
+// AMM のデコーダは ROM 先頭のポインタから読むので、割り当てを 1 本の連続した
+// 領域にして渡す。base 0 の 1 ブロックならそのまま渡し、それ以外は ROM を
+// つないだ複製を作る。RAM はその場で読む約束なので、複製が要る形では受けられない
+static FmResult ammView(const MemMap& map, std::vector<uint8_t>& flat,
+                        const uint8_t*& data, uint32_t& size)
+{
+    std::vector<const MemMap::Block*> reach;
+    for (const auto& b : map.blocks())
+        if (b.base < kAmmMemSpace) reach.push_back(&b);
+
+    data = nullptr;
+    size = 0;
+    if (reach.empty()) return FM_OK;
+    if (reach.size() == 1 && reach[0]->base == 0) {
+        data = reach[0]->read;
+        size = std::min(reach[0]->size, kAmmMemSpace);
+        return FM_OK;
+    }
+
+    uint64_t end = 0;
+    for (const auto* b : reach) {
+        if (b->write) return FM_ERR_UNAVAILABLE;
+        end = std::max(end, (uint64_t)b->base + b->size);
+    }
+    size = (uint32_t)std::min<uint64_t>(end, kAmmMemSpace);
+    flat.assign(size, 0);
+    for (const auto* b : reach)
+        memcpy(&flat[b->base], b->read, std::min(b->size, size - b->base));
+    data = flat.data();
+    return FM_OK;
+}
+
+// 外部メモリの割り当てを next に差し替え、その部をリセットする。
+// AMM 部が受けられない割り当てなら、何も変えずに FM_ERR_UNAVAILABLE を返す
+static FmResult applyMemory(ChipEntry& c, MemMap next)
+{
+    if (c.amm) {
+        std::vector<uint8_t> flat;
+        const uint8_t* data = nullptr;
+        uint32_t size = 0;
+        const FmResult r = ammView(next, flat, data, size);
+        if (r != FM_OK) return r;
+        // data が flat を指していても、swap ではバッファが動かない
+        c.amm_flat.swap(flat);
+        c.amm->set_rom(data, size);
+        // ROM 差し替えでレジスタもリセットされるため再生レートを取り直す
+        c.amm_rate = c.amm->sample_rate();
+        c.amm_interp.set_rate(c.amm_rate, c.sample_rate);
+    }
+
+    c.mem = std::move(next);
+    if (c.adpcm) c.adpcm->set_memory(&c.mem);
+    if (c.pcm)   c.pcm->device_reset();
+
+    const bool copy_mapped = std::any_of(c.mem.blocks().begin(), c.mem.blocks().end(),
+        [&c](const MemMap::Block& b) { return !c.mem_copy.empty() && b.read == c.mem_copy.data(); });
+    if (!copy_mapped) std::vector<uint8_t>().swap(c.mem_copy);
+    return FM_OK;
 }
 
 // =========================================================
@@ -556,45 +642,25 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
     if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
     ChipEntry& c = *engine->chips[chip_id];
     if (size != 0 && !data) return FM_ERR_INVALID_ARG;
-    const uint8_t* rom  = (size != 0) ? data : nullptr;
-    const uint32_t bytes = (data != nullptr) ? size : 0;
+    if (mem_type != FM_MEM_PCM || !hasExtMemory(c)) return FM_ERR_UNAVAILABLE;
 
     std::lock_guard<std::mutex> lock(engine->write_mutex);
-
-    if (mem_type == FM_MEM_PCM && c.amm) {
-        c.mem_size = bytes;
-        c.amm->set_rom(rom, bytes);
-        // ROM 差し替えでレジスタもリセットされるため再生レートを取り直す
-        c.amm_rate = c.amm->sample_rate();
-        c.amm_interp.set_rate(c.amm_rate, c.sample_rate);
-        return FM_OK;
-    }
-
-    if (mem_type == FM_MEM_PCM && c.adpcm) {
-        c.mem_size = bytes;
-        c.adpcm->set_rom(rom, bytes);
-        return FM_OK;
-    }
-
-    if (mem_type == FM_MEM_PCM && c.pcm) {
-        if (rom) {
-            if (!c.pcm_mem) {
-                c.pcm_mem.reset(new(std::nothrow) uint8_t[kPcmMemSpace]);
-                if (!c.pcm_mem) return FM_ERR_ALLOC;
+    try {
+        // それまでの割り当ては外し、[0, size) だけにする
+        MemMap next;
+        if (size != 0) {
+            if (c.pcm) {
+                std::vector<uint8_t> copy(data, data + size);
+                next.add({ 0, size, copy.data(), copy.data() });
+                c.mem_copy.swap(copy);
+            } else {
+                next.add({ 0, size, data, nullptr });
             }
-            const uint32_t n = std::min(bytes, kPcmMemSpace);
-            memcpy(c.pcm_mem.get(), rom, n);
-            memset(c.pcm_mem.get() + n, 0, kPcmMemSpace - n);
-        } else {
-            c.pcm_mem.reset();
         }
-        c.mem_size = bytes;
-        c.pcm->device_start(c.pcm_mem.get());
-        c.pcm->device_reset();
-        return FM_OK;
+        return applyMemory(c, std::move(next));
+    } catch (const std::bad_alloc&) {
+        return FM_ERR_ALLOC;
     }
-
-    return FM_ERR_UNAVAILABLE;
 }
 
 FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetMemorySize(
@@ -602,7 +668,34 @@ FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetMemorySize(
 {
     if (!engine || chip_id >= engine->chips.size()) return 0;
     if (mem_type != FM_MEM_PCM) return 0;
-    return engine->chips[chip_id]->mem_size;
+    return engine->chips[chip_id]->mem.total_size();
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemoryEx(
+    FmEngineHandle engine, uint32_t chip_id,
+    FmMemoryType mem_type, uint32_t base,
+    uint8_t* data, uint32_t size, FmMemoryAccess access)
+{
+    if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
+    ChipEntry& c = *engine->chips[chip_id];
+    if (mem_type != FM_MEM_PCM || !hasExtMemory(c)) return FM_ERR_INVALID_ARG;
+    if (!MemMap::valid_range(base, size)) return FM_ERR_INVALID_ARG;
+    if (data && access != FM_ACCESS_ROM && access != FM_ACCESS_RAM) return FM_ERR_INVALID_ARG;
+
+    std::lock_guard<std::mutex> lock(engine->write_mutex);
+    try {
+        MemMap next = c.mem;
+        if (!data) {
+            next.remove_overlapping(base, size);
+            if (next.blocks().size() == c.mem.blocks().size()) return FM_OK;
+        } else {
+            if (next.overlaps_any(base, size)) return FM_ERR_INVALID_ARG;
+            next.add({ base, size, data, access == FM_ACCESS_RAM ? data : nullptr });
+        }
+        return applyMemory(c, std::move(next));
+    } catch (const std::bad_alloc&) {
+        return FM_ERR_ALLOC;
+    }
 }
 
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_Generate(

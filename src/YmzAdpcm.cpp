@@ -2,6 +2,7 @@
 // YMZ705 / YMZ732 の ADPCM 再生部の実装
 
 #include "YmzAdpcm.h"
+#include "MemMap.h"
 
 #include <algorithm>
 
@@ -40,8 +41,7 @@ static constexpr uint32_t kStartTable = 0x000;
 static constexpr uint32_t kEndTable   = 0x0C0;
 
 ymz_adpcm_device::ymz_adpcm_device()
-    : m_rom(nullptr)
-    , m_rom_size(0)
+    : m_mem(nullptr)
     , m_voice{}
 {
     static const bool built = buildTables();
@@ -49,10 +49,9 @@ ymz_adpcm_device::ymz_adpcm_device()
     reset();
 }
 
-void ymz_adpcm_device::set_rom(const uint8_t* data, uint32_t size)
+void ymz_adpcm_device::set_memory(const MemMap* mem)
 {
-    m_rom      = (size != 0) ? data : nullptr;
-    m_rom_size = (data != nullptr) ? size : 0;
+    m_mem = mem;
     reset();
 }
 
@@ -80,8 +79,7 @@ void ymz_adpcm_device::reset()
 
 uint8_t ymz_adpcm_device::rom_byte(uint32_t offset) const
 {
-    if (!m_rom || offset >= m_rom_size) return 0;
-    return m_rom[offset];
+    return m_mem ? m_mem->read(offset) : 0;
 }
 
 // テーブルは L / M / H の順に 64 バイトずつ並ぶ
@@ -123,7 +121,7 @@ void ymz_adpcm_device::key_on(voice& v)
     v.last_sample = 0;
     v.curr_sample = 0;
     v.output_pos  = kFracOne;
-    v.playing     = (v.stop > v.start) && (m_rom != nullptr);
+    v.playing     = (v.stop > v.start) && m_mem && !m_mem->empty();
 }
 
 // 1 ニブル分デコードして次のサンプルを返す
