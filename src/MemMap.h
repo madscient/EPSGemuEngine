@@ -45,13 +45,6 @@ public:
     bool empty() const { return m_blocks.empty(); }
     const std::vector<Block>& blocks() const { return m_blocks; }
 
-    // GetMemorySize が返す大きさ。合計が 32bit を越えたら飽和させる
-    uint32_t total_size() const {
-        uint64_t total = 0;
-        for (const Block& b : m_blocks) total += b.size;
-        return total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
-    }
-
     uint8_t read(uint32_t address) const {
         if (const Block* b = find(address)) return b->read[address - b->base];
         return 0;

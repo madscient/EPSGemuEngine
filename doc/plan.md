@@ -16,22 +16,21 @@ AI がセッションをまたいで作業を引き継ぐための文書。利�
 
 | 対象 | 版 | 備考 |
 |---|---|---|
-| madscient/FMEngineTest `docs/FmEngineApi.md`（仕様の正） | `866f4a3` | 部位ゲイン `e39b206`、外部メモリの割り当て `e002890`、外部メモリの説明の明確化 `c0589c1`、clock=0 の廃止 `866f4a3` までを読んだ |
-| madscient/YMEngine `src/FmEngineApi.h`（参照ヘッダ） | `ac29207` | `src/FmEngineApi.h` はこの写しで、一字も変えていない（**確認済み**: `git hash-object` が一致） |
+| madscient/FMEngineTest `docs/FmEngineApi.md`（仕様の正） | `20c4923` | 部位と外部メモリを名前で指定する形（§3） |
+| madscient/FMEngineTest `include/FmEngineApi.h`（ヘッダの正本） | `20c4923` | `src/FmEngineApi.h` はこの写しで、一字も変えていない（**確認済み**: `git hash-object` が `20c4923` のブロブと一致） |
+| madscient/FMEngineTest `docs/CHANGELOG.md`（各エンジンに求める対応） | `20c4923` | 「外部メモリを名前で指定する」「部位を名前で指定する／ヘッダの正本をこのリポジトリに置く」の 2 節を読んだ |
 
-ヘッダの注記と本エンジンの挙動の違い: `ac29207` のヘッダは `FmEngine_SetMemory` に
-ついて「data は複製せず参照する」「チップからの書き込みは捨てる」と書く。YMEngine の
-実装の記述で、本エンジンの `PCMD8` は複製し、チップの書き込みは複製に入る（§2.7）。
-`SetMemory` がデータに書き込まない点は一致する（**確認済み(読解)**）。写しの規則に従い、
-ヘッダは直さない。
-
-ヘッダが仕様より古い点: `ac29207` のヘッダは `FmEngine_AddChip` について「0 で各チップの
-標準クロックを使用」と書くが、仕様書 `866f4a3` で clock=0 は廃止された（§2.8）。
-YMEngine が追随したら写し直す（2026-10-02 時点で YMEngine の最新は `ac29207`）。
+ヘッダの写し元は、`20c4923` で madscient/YMEngine の `src/FmEngineApi.h` から上の正本に
+変わった。正本のコメントは特定のエンジンに依らない書き方で、本エンジンの挙動と食い違う
+注記は無い（**確認済み(読解)**）。ヘッダは部位ごとのゲインの 4 関数も宣言するが、
+本エンジンは定義しない（§3.2）。
 
 ## 2. 2026-10-02 FmEngineApi の改定への追随
 
 ### 2.1 部位ゲイン
+
+§3.2 で改めた（部位ごとのゲインの関数はエクスポートしない）。以下は、番号で指定する
+形だったときの記録。
 
 - `FmEngine_SetPartGain` / `FmEngine_GetPartGain` / `FmEngine_GetPartMask` を
   エクスポートし、どのチップも部位を持たないとした。`GetPartMask` は `FM_OK` で 0、
@@ -51,6 +50,9 @@ YMEngine が追随したら写し直す（2026-10-02 時点で YMEngine の最�
   あり、チップの中で混ぜていると読める）
 
 ### 2.2 外部メモリの種別: `FM_MEM_AMM` を廃止し `FM_MEM_PCM` に統合
+
+§3.1 で、種別の番号は名前 `PCM` に置き換わった。1 チップ 1 種類の前提は引き継いでいる。
+以下は、番号で指定する形だったときの記録。
 
 - 発端: 仕様書 `e002890` が `FM_MEM_ADPCM_B_ROMMODE = 4` を割り当て、本リポジトリ
   独自の `FM_MEM_AMM = 4` と番号が重なった
@@ -267,5 +269,150 @@ AMM フレーズデータでの再生。
 - §2.5〜§2.7 の検査は、クロックを明示するように直したうえで変更後ですべて通った
   （§2.5 の「`SetMemoryEx` をエクスポートしない」の 1 項目は §2.7 で逆になったもの）
 
-**未検証**: `clock` を足したパッチを FMEngineTest（`866f4a3` 以降）で読み込むこと。
-JSON として読めて `clock` が正の整数であることだけ確かめた。
+`clock` を足したパッチを FMEngineTest で読み込むことは、この時点では確かめていなかった。
+§3.5 で `20c4923` のテストツールから読み込んで確かめた。
+
+## 3. 2026-10-03 FmEngineApi の改定への追随（部位と外部メモリを名前で指定する）
+
+仕様書 `20c4923` の変更点（**確認済み(読解)**: 仕様書・ヘッダ・CHANGELOG の `866f4a3` からの
+差分を読んだ）:
+
+- 部位と外部メモリを、番号ではなく名前の文字列で指定する。チップが持つものは
+  `FmEngine_GetPartCount` / `FmEngine_GetPartName`、`FmEngine_GetMemoryCount` /
+  `FmEngine_GetMemoryName` で列挙する。`FmPart`、`FmMemoryType`、`FmEngine_GetPartMask`、
+  `FmEngine_GetMemorySize` は無くなった
+- `FmEngine_SetPartGain` / `FmEngine_GetPartGain` / `FmEngine_SetMemory` /
+  `FmEngine_SetMemoryEx` は、関数名はそのままで第 3 引数が `const char*` になった
+- 外部メモリの 3 関数（`GetMemoryCount` / `GetMemoryName` / `SetMemory`）は任意の組に
+  なり、必須シンボルは 14 個から 12 個になった。`SetMemoryEx` をエクスポートするエンジンは
+  この 3 つもエクスポートする。部位ごとのゲインの 4 関数も組でエクスポートする
+- チップが持たない名前と NULL の名前は、`SetMemory` も `SetMemoryEx` も
+  `FM_ERR_INVALID_ARG`
+- 仕様書の表に無いチップの部位・外部メモリの名前は、エンジンが決める（ASCII の英大文字・
+  数字・`_`）。本エンジンのチップは、どちらの表にも無い
+- ヘッダの正本が FMEngineTest の `include/FmEngineApi.h` に移った（§1）
+
+### 3.1 外部メモリの名前はすべて `PCM`
+
+- 決定（ユーザー）: AMMS-A / SSGS3 の AMM フレーズ ROM、SSGS / SSGS2 の ADPCM ボイス ROM、
+  PCMD8 の外部メモリを、どれも `PCM` という名前で受ける。§2.2 の `FM_MEM_PCM` への統合を、
+  そのまま名前に移した
+- 前提: 1 チップが持つ外部メモリは 1 種類（§2.2 と同じ）。2 種類持つチップを足すときは、
+  そのチップの中で名前を分ける。名前はチップごとに独立なので、ほかのチップの名前は
+  変えずに済む
+- 仕様書の表の OPL4 の `PCM` と同じ綴りになる。名前はチップごとに独立なので衝突しない
+  （**確認済み(読解)**: 仕様書「外部メモリの名前はチップごとに独立です」）
+- やり直しの値段: コードは `src/EPSGemuEngine.cpp` の `kMemoryName` 1 つ。ほかに README の
+  表と例、本書。アプリケーションが名前を設定ファイルに書き始めた後は、そこにも及ぶ
+- 見送った案:
+  - 中身ごとに分ける（AMM 部は `AMM`、ADPCM 部は `ADPCM`、PCMD8 は `PCM`）。理由:
+    ユーザーが統一を選んだ
+  - すべて `ROM`。理由: PCMD8 は SRAM もつなげるので、名前が実態と食い違う
+
+### 3.2 部位ごとのゲインの関数はエクスポートしない
+
+- 決定（ユーザー）: 部位ごとのゲインの 4 関数をエクスポートしない。§2.1 の決定（どの
+  チップも部位を持たないスタブをエクスポートする）を改めた。仕様書は、エクスポート
+  しないエンジンも準拠とし、呼び出し側は `FmEngine_GetPartCount` の有無で判定する。
+  呼び出し側からは、部位を持たないエンジンに見える
+- 前提: どのチップも部位を持たないこと。部位を持たせるときは、4 関数を組で足す
+- §2.1 の根拠（仕様書の表に無いチップは部位を持たない）は、仕様書 `20c4923` で成り立た
+  なくなった。表に無いチップの部位は、名前と既定値をエンジンが決められる
+- やり直しの値段: スタブに戻すなら、0・NULL・`FM_ERR_INVALID_ARG` を返す 4 関数と README の
+  1 節
+- 見送った案:
+  - 部位を持たないスタブを続ける（`GetPartCount` は 0、`GetPartName` は NULL、
+    `Set/GetPartGain` は `FM_ERR_INVALID_ARG`）。理由: ユーザーがエクスポートをやめる
+    ほうを選んだ
+  - SSGS / SSGS2 に SSG と ADPCM、SSGS3 に SSG と AMM の部位を持たせる。理由: 今回の
+    追随とは別の作業。別々の端子から出るかをデータシートで確かめていない（§2.1 の
+    **推測**のまま）。部位の名前と既定値は外に出る値になる
+
+### 3.3 実装
+
+- `src/FmEngineApi.h` を FMEngineTest `20c4923` の `include/FmEngineApi.h` の写しにした
+- `FmEngine_GetMemoryCount` / `FmEngine_GetMemoryName` を足した。外部メモリを持つ 5 チップ
+  （SSGS / SSGS2 / SSGS3 / AMMS-A / PCMD8）は 1 と `PCM`、ほかの 4 チップと未知の
+  `chip_id` は 0 と NULL
+- `FmEngine_SetMemory` / `FmEngine_SetMemoryEx` は名前を受け取る。未知の `chip_id`、
+  NULL の名前、チップが持たない名前（外部メモリを持たないチップに渡した `PCM` を含む）は
+  `FM_ERR_INVALID_ARG`。名前は大文字小文字を区別して全体を比べる。`SetMemory` は、
+  持たない種別に `FM_ERR_UNAVAILABLE` を返していたのを改めた
+- 名前の判定より後ろは変えていない。`SetMemory` の `size` が 0 なら割り当てを外す、
+  `size` が 0 でなく `data` が NULL なら `FM_ERR_INVALID_ARG`、も元のまま（仕様書は
+  この 2 つを定めていない）
+- `FmEngine_GetMemorySize` と、それだけが使っていた `MemMap::total_size` を消した
+- `FmEngine_SetPartGain` / `FmEngine_GetPartGain` / `FmEngine_GetPartMask` を消した
+- エクスポートは 16 シンボル（必須 12 + 外部メモリ 3 + `SetMemoryEx`）
+
+### 3.4 利用者から見える変化
+
+- 番号で指定する形でビルドした呼び出し側と組み合わせると、DLL は番号を名前のポインタ
+  として読む。外部メモリを持つチップでは、その番地を文字列として読みに行く
+  （**確認済み(読解)**。走らせてはいない）。組み合わせないことは、仕様書の決定の前提に
+  なっている（FMEngineTest の CHANGELOG）
+- FMEngineTest `866f4a3` 以前は `FmEngine_GetMemorySize` を必須として読むので、この DLL を
+  ロードできない（**確認済み(読解)**: `866f4a3` の `src/main.cpp` の `LOAD_SYM`）
+- 部位ごとのゲインの関数を呼んでいた呼び出し側からは、シンボルが無くなる。番号で
+  指定する形を呼ぶのはエンジン自身のテストだけで、アプリケーションには呼び出しが無い、
+  と FMEngineTest の CHANGELOG にある（自分では検索していない）
+- 出力は変わらない（§3.5）
+
+### 3.5 確認
+
+**確認済み**（変更前の `7cd1e8a` と変更後を §2.5 と同じ手順でビルドし、同じ検査
+プログラムを両方の DLL に当てた。検査プログラムはリポジトリに入れていない。前回までの
+検査プログラムは残っていなかったので、書き直した）:
+
+- 変更後の DLL は 363 項目すべて通った
+
+| 群 | 項目 | 内容 |
+|---|---|---|
+| エクスポート | 22 | 必須 12 と外部メモリの 4 つがあり、部位ゲインの 4 つ・`GetPartMask`・`GetMemorySize` が無い |
+| 列挙 | 50 | 9 チップの数と名前、範囲外の `index`、未知の `chip_id`、2 回目も同じ名前、名前の文字種 |
+| `SetMemory` の引数 | 98 | `PCM` と列挙で得た名前は `FM_OK`。`pcm` / `Pcm` / `PCMX` / `PC` / 空文字列 / 前に空白 / 仕様書の表にあるほかのチップの名前 3 つ（`ADPCM_A` / `ADPCM_B` / `RHYTHM`）/ `AMM` / `ADPCM` / NULL は `FM_ERR_INVALID_ARG`。外部メモリを持たないチップ、未知の `chip_id`、`data` と `size` の組み合わせ |
+| `SetMemoryEx` の引数 | 144 | 上と同じ名前の組み合わせに加えて、`size` 0、`base + size` が 2^32 ちょうどと超過、重なり、隣接、未知の `access`、`data` が NULL での解除 |
+| clock=0 | 9 | §2.8 の挙動が変わっていない |
+| メモリがチップに届く | 40 | 5 チップで、`SetMemory` で鳴る・外すと無音・メモリ無しは無音・拒否された名前では割り当てられない・`SetMemoryEx` の ROM が `SetMemory` とビット一致・0 埋めの RAM を割り当てた後に書いた中身で鳴る・`SetMemory` が `SetMemoryEx` の割り当てを置き換える。AMM 部の複製が要る RAM は `FM_ERR_UNAVAILABLE`。PCMD8 の `0x87` の書き込みが RAM に入る・ROM と `SetMemory` のデータには入らない |
+
+- 変更前の DLL に同じ検査（名前を渡す）を当てると 228 項目が落ちた。検査は変更の有無を
+  見分けている
+- 「メモリがチップに届く」の群のうち名前に依らない 35 項目と clock=0 の 9 項目は、変更前の
+  DLL に番号（`FM_MEM_PCM`）を渡す形でも、すべて通った。名前の判定より後ろの挙動は
+  変わっていない
+- 実装をわざと壊した 5 つの版を作り、対応する検査が落ちることを確かめた:
+
+| 壊し方 | 落ちた検査 |
+|---|---|
+| 名前を大文字小文字を区別せずに比べる | 25 項目（`pcm` / `Pcm` を受ける、拒否されるはずの名前で割り当てられる） |
+| 名前を先頭 3 文字だけで比べる | 10 項目（`PCMX` を受ける） |
+| どのチップも外部メモリを 1 つ報告する | 8 項目（外部メモリを持たない 4 チップの数と名前） |
+| 外部メモリを持たないチップが `PCM` を受ける | 8 項目 |
+| `SetMemory` が持たない名前に `FM_ERR_UNAVAILABLE` を返す | 77 項目 |
+
+- 全 9 チップの出力（48kHz、9,600 サンプル、L/R）が、変更前（番号で渡す）と変更後
+  （名前で渡す）でビット一致した。どのチップも無音ではない（RMS 0.09〜0.70）
+- エクスポートは 16 シンボル（`dumpbin /exports`）。変更後のツリーは警告なしでビルドできる
+- ヘッダは、アプリケーションの側（`FMENGINE_EXPORTS` なし）から include して `/W4` で通る
+  （検査プログラムがそうしている）
+- FMEngineTest `20c4923` をビルドし、変更後の DLL を読み込めた。`SSGS` と `SSGS3` の
+  外部メモリ `PCM` が列挙され、`[MEM] … no ROM file is defined for it in this tool` と
+  表示される。パッチ 4 本（`clock` を足したもの。36 秒）を WAV に書き出すと、変更前の
+  DLL のものとバイト一致した。無音ではない。変更前の DLL には
+  `FmEngine_GetMemoryCount is not exported` の断りが出る
+
+外部メモリを外した直後の出力は、先頭の 1〜2 サンプルだけ 0 にならない。出力レートへの
+線形補間が、直前のサンプルから 0 へ下りる分である。変更前の DLL でも同じ値になる
+（**確認済み**: 上の検査で、外した後の 64 サンプルのうち非ゼロの最後の位置を見た）。
+
+**未検証**:
+
+- FMEngineTest から ROM ファイルを渡すこと。テストツールの ROM の表に本エンジンの
+  チップが無いので、テストツール経由では ADPCM 部・AMM 部・PCMD8 を鳴らせない
+- Linux / macOS（GCC / Clang）でのビルド
+- 本物の音声データ・AMM フレーズデータでの再生（検査のデータは乱数と正弦波）
+
+### 3.6 未決事項
+
+- SSGS / SSGS2 / SSGS3 に部位を持たせるか（§3.2 の見送った案）。先に、SSG 部と
+  ADPCM 部 / AMM 部が別々の端子から出るかをデータシートで確かめる

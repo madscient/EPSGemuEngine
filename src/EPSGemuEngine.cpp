@@ -148,7 +148,7 @@ struct ChipEntry {
     // PCMD8 のコアが 8 ボイスの L/R を書き出す先
     int16_t pcm_voice_out[kPcmVoiceBufs] = {};
 
-    // FM_MEM_PCM の外部メモリの割り当て。
+    // 外部メモリの割り当て。
     // AMM 部 / ADPCM 部 / PCMD8 を 2 つ以上持つチップは無いので 1 つで足りる
     MemMap mem;
 
@@ -454,9 +454,20 @@ static void pcmCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
 // =========================================================
 //  外部メモリの割り当て
 // =========================================================
-// FM_MEM_PCM の外部メモリを持つチップか
+// AMM 部 / ADPCM 部 / PCMD8 のどの外部メモリも、この名前で受ける
+static const char kMemoryName[] = "PCM";
+
 static bool hasExtMemory(const ChipEntry& c) {
     return c.amm || c.adpcm || c.pcm;
+}
+
+static uint32_t memoryCount(const ChipEntry& c) {
+    return hasExtMemory(c) ? 1 : 0;
+}
+
+// memory がチップの持つ外部メモリの名前か
+static bool ownsMemory(const ChipEntry& c, const char* memory) {
+    return memory && hasExtMemory(c) && strcmp(memory, kMemoryName) == 0;
 }
 
 // AMM のデコーダは ROM 先頭のポインタから読むので、割り当てを 1 本の連続した
@@ -611,38 +622,32 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetGain(
     return FM_OK;
 }
 
-// 部位は仕様書の部位の表に載るチップだけが持つ。本エンジンのチップは
-// 載っていないので、どのチップも部位を持たない
-FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetPartGain(
-    FmEngineHandle /*engine*/, uint32_t /*chip_id*/, FmPart /*part*/,
-    float /*gain_l*/, float /*gain_r*/)
+// どのチップも部位を持たないので、ヘッダが宣言する部位ごとのゲインの 4 関数は
+// 定義しない (組ごとエクスポートしない)
+
+FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetMemoryCount(
+    FmEngineHandle engine, uint32_t chip_id)
 {
-    return FM_ERR_INVALID_ARG;
+    if (!engine || chip_id >= engine->chips.size()) return 0;
+    return memoryCount(*engine->chips[chip_id]);
 }
 
-FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetPartGain(
-    FmEngineHandle /*engine*/, uint32_t /*chip_id*/, FmPart /*part*/,
-    float* /*out_gain_l*/, float* /*out_gain_r*/)
+FMENGINE_API const char* FMENGINE_CALL FmEngine_GetMemoryName(
+    FmEngineHandle engine, uint32_t chip_id, uint32_t index)
 {
-    return FM_ERR_INVALID_ARG;
-}
-
-FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetPartMask(
-    FmEngineHandle engine, uint32_t chip_id, uint32_t* out_mask)
-{
-    if (!engine || chip_id >= engine->chips.size() || !out_mask) return FM_ERR_INVALID_ARG;
-    *out_mask = 0;
-    return FM_OK;
+    if (!engine || chip_id >= engine->chips.size()) return nullptr;
+    if (index >= memoryCount(*engine->chips[chip_id])) return nullptr;
+    return kMemoryName;
 }
 
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
     FmEngineHandle engine, uint32_t chip_id,
-    FmMemoryType mem_type, const uint8_t* data, uint32_t size)
+    const char* memory, const uint8_t* data, uint32_t size)
 {
     if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
     ChipEntry& c = *engine->chips[chip_id];
+    if (!ownsMemory(c, memory)) return FM_ERR_INVALID_ARG;
     if (size != 0 && !data) return FM_ERR_INVALID_ARG;
-    if (mem_type != FM_MEM_PCM || !hasExtMemory(c)) return FM_ERR_UNAVAILABLE;
 
     std::lock_guard<std::mutex> lock(engine->write_mutex);
     try {
@@ -663,22 +668,14 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
     }
 }
 
-FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetMemorySize(
-    FmEngineHandle engine, uint32_t chip_id, FmMemoryType mem_type)
-{
-    if (!engine || chip_id >= engine->chips.size()) return 0;
-    if (mem_type != FM_MEM_PCM) return 0;
-    return engine->chips[chip_id]->mem.total_size();
-}
-
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemoryEx(
     FmEngineHandle engine, uint32_t chip_id,
-    FmMemoryType mem_type, uint32_t base,
+    const char* memory, uint32_t base,
     uint8_t* data, uint32_t size, FmMemoryAccess access)
 {
     if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
     ChipEntry& c = *engine->chips[chip_id];
-    if (mem_type != FM_MEM_PCM || !hasExtMemory(c)) return FM_ERR_INVALID_ARG;
+    if (!ownsMemory(c, memory)) return FM_ERR_INVALID_ARG;
     if (!MemMap::valid_range(base, size)) return FM_ERR_INVALID_ARG;
     if (data && access != FM_ACCESS_ROM && access != FM_ACCESS_RAM) return FM_ERR_INVALID_ARG;
 

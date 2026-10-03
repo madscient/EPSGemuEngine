@@ -294,7 +294,7 @@ SSG ブロックの動作クロックを clk (既定 2.048 MHz) として、
 
 YMZ705 / YMZ732 は 4bit ADPCM を 8 チャンネル同時に再生できます。
 ボイスデータは外部 ROM に置き、`FmEngine_SetMemory` (または
-`FmEngine_SetMemoryEx`) に `FM_MEM_PCM` を指定して渡します。
+`FmEngine_SetMemoryEx`) に外部メモリの名前 `"PCM"` を指定して渡します。
 
 ### レジスタマップ
 
@@ -414,11 +414,11 @@ AMM (AMusement Music compression) 形式のフレーズデータを外部 ROM �
 
 ### フレーズデータ ROM
 
-`FmEngine_SetMemory` (または `FmEngine_SetMemoryEx`) に `FM_MEM_PCM` を
-指定して渡します。データの寿命は呼び出し元が管理します。
+`FmEngine_SetMemory` (または `FmEngine_SetMemoryEx`) に外部メモリの名前
+`"PCM"` を指定して渡します。データの寿命は呼び出し元が管理します。
 
 ```c
-FmEngine_SetMemory(engine, chip_id, FM_MEM_PCM, rom_data, rom_size);
+FmEngine_SetMemory(engine, chip_id, "PCM", rom_data, rom_size);
 ```
 
 ROM 先頭には以下のテーブルが並びます。いずれも 1 エントリ 4 バイトで、
@@ -465,7 +465,7 @@ ROM 先頭には以下のテーブルが並びます。いずれも 1 エント�
 
 YMZ280B は 4bit ADPCM / 8bit PCM / 16bit PCM を 8 チャンネル同時に
 再生できます。音声データは外部メモリに置き、`FmEngine_SetMemory` または
-`FmEngine_SetMemoryEx` に `FM_MEM_PCM` を指定して渡します。チップが書き込んだ
+`FmEngine_SetMemoryEx` に外部メモリの名前 `"PCM"` を指定して渡します。チップが書き込んだ
 内容をアプリケーションで受け取るには、`FmEngine_SetMemoryEx` で RAM の
 ブロックを割り当てます (「外部メモリ」の節を参照)。
 
@@ -568,34 +568,34 @@ fs が再生中に変わりもするため、区間平均ではなく線形補�
 
 ### 部位ごとのゲイン
 
-FmEngineApi の任意エクスポート `FmEngine_SetPartGain` / `FmEngine_GetPartGain` /
-`FmEngine_GetPartMask` をエクスポートしていますが、どのチップも部位を持ちません。
-SSG 部と ADPCM 部 / AMM 部を持つチップも、部位には分けていません。
-
-| 関数 | 戻り値 |
-|---|---|
-| `FmEngine_GetPartMask` | `FM_OK` (マスクは 0) |
-| `FmEngine_SetPartGain` / `FmEngine_GetPartGain` | `FM_ERR_INVALID_ARG` |
+どのチップも部位を持ちません。SSG 部と ADPCM 部 / AMM 部を持つチップも、部位には
+分けていません。FmEngineApi の任意エクスポートである部位ごとのゲインの 4 関数
+(`FmEngine_GetPartCount` / `FmEngine_GetPartName` / `FmEngine_SetPartGain` /
+`FmEngine_GetPartGain`) はエクスポートしていません。
 
 音量は `FmEngine_SetGain` で設定します。
 
 ### 外部メモリ
 
-外部メモリの種別はいずれも `FM_MEM_PCM` です。`FmEngine_SetMemory` と
-`FmEngine_SetMemoryEx` の両方に対応しています。
+FmEngineApi の任意エクスポートである外部メモリの 3 関数 (`FmEngine_GetMemoryCount` /
+`FmEngine_GetMemoryName` / `FmEngine_SetMemory`) と `FmEngine_SetMemoryEx` を
+エクスポートしています。
 
-| チップ | 内容 | チップからの書き込み |
-|---|---|---|
-| `AMMS-A` / `SSGS3` | AMM フレーズデータ ROM | なし |
-| `SSGS` / `SSGS2` | ADPCM ボイスデータ ROM | なし |
-| `PCMD8` | 音声データ用外部メモリ | `0x87` |
+外部メモリを持つのは次の 5 チップで、どれも 1 つだけ持ちます。名前はいずれも
+`PCM` です (大文字小文字を区別します)。
 
-上記以外のチップや `FM_MEM_PCM` 以外の種別では、`FmEngine_SetMemory` は
-`FM_ERR_UNAVAILABLE`、`FmEngine_SetMemoryEx` は `FM_ERR_INVALID_ARG` を返します。
+| チップ | 外部メモリの名前 | 内容 | チップからの書き込み |
+|---|---|---|---|
+| `AMMS-A` / `SSGS3` | `PCM` | AMM フレーズデータ ROM | なし |
+| `SSGS` / `SSGS2` | `PCM` | ADPCM ボイスデータ ROM | なし |
+| `PCMD8` | `PCM` | 音声データ用外部メモリ | `0x87` |
+
+`FmEngine_GetMemoryCount` は上の 5 チップで 1、それ以外のチップで 0 を返します。
+外部メモリを持たないチップや `PCM` 以外の名前を指定すると、`FmEngine_SetMemory` と
+`FmEngine_SetMemoryEx` は `FM_ERR_INVALID_ARG` を返します。
 
 割り当ての無い番地を読むと 0 で、書き込みは捨てます。割り当てを変えると
-該当部はリセットされます (SSG 部は影響を受けません)。`FmEngine_GetMemorySize` は
-割り当てたブロックの大きさの合計を返します。
+該当部はリセットされます (SSG 部は影響を受けません)。
 
 #### `FmEngine_SetMemory`
 
